@@ -3,6 +3,7 @@ WORKDIR /src
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY web/package.json ./web/package.json
 RUN corepack enable && pnpm install --frozen-lockfile
+COPY scripts/ ./scripts/
 COPY web/ ./web/
 RUN pnpm --dir web run build
 
@@ -16,9 +17,7 @@ COPY --from=web /src/web/dist/ ./internal/web/dist/
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/oh-my-cpa ./cmd/oh-my-cpa
 
 FROM alpine:3.21
-RUN apk add --no-cache ca-certificates tzdata \
-    && addgroup -g 10001 -S omc \
-    && adduser -u 10001 -S omc -G omc
+RUN apk add --no-cache ca-certificates tzdata     && addgroup -g 10001 -S omc     && adduser -u 10001 -S omc -G omc
 COPY --from=server /out/oh-my-cpa /usr/local/bin/oh-my-cpa
 RUN mkdir -p /data && chown -R omc:omc /data && chmod 700 /data
 USER 10001:10001
