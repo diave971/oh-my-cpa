@@ -51,6 +51,8 @@ var AllowedURLPrefixes = []string{
 	"https://api.kimi.com/coding/v1/",
 	"https://cli-chat-proxy.grok.com/v1/billing",
 	"https://api.x.ai/v1/",
+	"https://www.codebuddy.cn/v2/billing/",
+	"https://copilot.tencent.com/",
 }
 
 // IsAllowedQuotaURL verifies that a target URL is in the strict quota allowlist.
@@ -101,6 +103,8 @@ func DetectProvider(fileType, provider string) string {
 		return "kimi"
 	case strings.Contains(t, "xai") || strings.Contains(p, "xai") || strings.Contains(t, "grok") || strings.Contains(p, "grok"):
 		return "xai"
+	case strings.Contains(t, "codebuddy") || strings.Contains(p, "codebuddy") || strings.Contains(t, "workbuddy") || strings.Contains(p, "workbuddy"):
+		return "codebuddy"
 	default:
 		if t != "" {
 			return t
@@ -122,7 +126,7 @@ func CapabilitiesForProvider(provider string) QuotaCapabilities {
 			ClearCooldownSupported: true,
 			ResetCreditSupported:   true,
 		}
-	case "claude", "antigravity", "kimi", "xai":
+	case "claude", "antigravity", "kimi", "xai", "codebuddy":
 		return QuotaCapabilities{
 			RefreshSupported:       true,
 			ClearCooldownSupported: true,
@@ -293,6 +297,15 @@ func (s *Service) RefreshCredentialQuota(ctx context.Context, file management.Au
 
 	case "xai":
 		plan, windows, err := s.fetchXaiQuota(ctx, file, nowMS)
+		if err != nil {
+			fetchErr = err
+		} else {
+			result.Plan = plan
+			result.Windows = windows
+		}
+
+	case "codebuddy":
+		plan, windows, err := s.fetchCodebuddyQuota(ctx, file, nowMS)
 		if err != nil {
 			fetchErr = err
 		} else {
@@ -579,6 +592,35 @@ func (s *Service) RedeemCodexCredit(ctx context.Context, authIndex string) error
 		return errors.New(sanitizeError(resp.StatusCode, normBody))
 	}
 	return nil
+}
+
+// fetchCodebuddyQuota calls Codebuddy's get-user-resource endpoint via CPA ApiCall.
+func (s *Service) fetchCodebuddyQuota(ctx context.Context, file management.AuthFile, nowMS int64) (*QuotaPlan, []QuotaWindow, error) {
+	headers := management.WithQuotaCredential(map[string]string{
+		"Accept":       "application/json",
+		"Content-Type": "application/json",
+		"X-Domain":     "www.codebuddy.cn",
+	})
+
+	resp, err := s.SafeApiCall(ctx, file.AuthIndex, "POST", "https://www.codebuddy.cn/v2/billing/meter/get-user-resource", headers, "{}")
+	if err != nil {
+		return nil, nil, fmt.Errorf("codebuddy api-call: %w", err)
+	}
+
+	normBody, err := resp.NormalizedBody()
+	if err != nil {
+		return nil, nil, fmt.Errorf("codebuddy response: %w", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, nil, errors.New(sanitizeError(resp.StatusCode, normBody))
+	}
+
+	windows, plan, err := ParseCodebuddyUsage([]byte(normBody), nowMS)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse codebuddy quota: %w", err)
+	}
+	return plan, windows, nil
 }
 
 // ClearCPACooldown resets the CPA error cooldown for an auth_index.
