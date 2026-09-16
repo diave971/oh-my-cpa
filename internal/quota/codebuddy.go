@@ -10,41 +10,61 @@ import (
 // RawCodebuddyAccount represents a single quota/package bucket returned by
 // Codebuddy's get-user-resource endpoint.
 type RawCodebuddyAccount struct {
-	PackageName               string  `json:"PackageName"`
-	CapacityRemain            any     `json:"CapacityRemain"`
-	CycleCapacityRemain       any     `json:"CycleCapacityRemain"`
-	CycleCapacityRemainPrecise string `json:"CycleCapacityRemainPrecise"`
-	CycleCapacitySize         any     `json:"CycleCapacitySize"`
-	CycleCapacitySizePrecise   string `json:"CycleCapacitySizePrecise"`
-	CycleCapacityUsed         any     `json:"CycleCapacityUsed"`
-	CycleCapacityUsedPrecise   string `json:"CycleCapacityUsedPrecise"`
-	CycleStartTime            string  `json:"CycleStartTime"`
-	CycleEndTime              string  `json:"CycleEndTime"`
-	ValidPeriodDays           any     `json:"ValidPeriodDays"`
+	PackageName                string `json:"PackageName"`
+	CapacityRemain             any    `json:"CapacityRemain"`
+	CycleCapacityRemain        any    `json:"CycleCapacityRemain"`
+	CycleCapacityRemainPrecise  string `json:"CycleCapacityRemainPrecise"`
+	CycleCapacitySize          any    `json:"CycleCapacitySize"`
+	CycleCapacitySizePrecise    string `json:"CycleCapacitySizePrecise"`
+	CycleCapacityUsed          any    `json:"CycleCapacityUsed"`
+	CycleCapacityUsedPrecise    string `json:"CycleCapacityUsedPrecise"`
+	CycleStartTime             string `json:"CycleStartTime"`
+	CycleEndTime               string `json:"CycleEndTime"`
+	ValidPeriodDays            any    `json:"ValidPeriodDays"`
 }
 
-// RawCodebuddyPayload represents the top-level response payload from Codebuddy.
-type RawCodebuddyPayload struct {
-	TotalCount  int                   `json:"TotalCount"`
-	TotalDosage any                   `json:"TotalDosage"`
-	Accounts    []RawCodebuddyAccount `json:"Accounts"`
+// RawCodebuddyResponse represents the nested wrapper in Codebuddy API.
+type RawCodebuddyResponse struct {
+	Code int `json:"code"`
+	Data struct {
+		Response struct {
+			Data struct {
+				TotalCount  int                   `json:"TotalCount"`
+				TotalDosage any                   `json:"TotalDosage"`
+				Accounts    []RawCodebuddyAccount `json:"Accounts"`
+			} `json:"Data"`
+		} `json:"Response"`
+	} `json:"data"`
 }
 
 // ParseCodebuddyUsage converts Codebuddy get-user-resource raw JSON response into
 // normalized quota windows.
 func ParseCodebuddyUsage(raw []byte, nowMS int64) ([]QuotaWindow, *QuotaPlan, error) {
-	var payload RawCodebuddyPayload
-	if err := json.Unmarshal(raw, &payload); err != nil {
+	var resp RawCodebuddyResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
 		return nil, nil, fmt.Errorf("invalid codebuddy payload: %w", err)
 	}
 
-	windows := make([]QuotaWindow, 0, len(payload.Accounts))
+	accounts := resp.Data.Response.Data.Accounts
+	if len(accounts) == 0 {
+		// Tolerate direct flat format if any
+		var flat struct {
+			TotalCount  int                   `json:"TotalCount"`
+			TotalDosage any                   `json:"TotalDosage"`
+			Accounts    []RawCodebuddyAccount `json:"Accounts"`
+		}
+		if err := json.Unmarshal(raw, &flat); err == nil && len(flat.Accounts) > 0 {
+			accounts = flat.Accounts
+		}
+	}
+
+	windows := make([]QuotaWindow, 0, len(accounts))
 	var totalLimit float64
 	var totalRemain float64
 	var totalUsed float64
 	hasAnyLimit := false
 
-	for i, acct := range payload.Accounts {
+	for i, acct := range accounts {
 		label := strings.TrimSpace(acct.PackageName)
 		if label == "" {
 			label = fmt.Sprintf("权益包 %d", i+1)
@@ -110,8 +130,6 @@ func ParseCodebuddyUsage(raw []byte, nowMS int64) ([]QuotaWindow, *QuotaPlan, er
 		var periodHours *float64
 
 		if acct.CycleEndTime != "" {
-			// Codebuddy time format: "2006-01-02 15:04:05" (CST/local)
-			// also tolerate RFC3339
 			var endT time.Time
 			var parseErr error
 			if strings.Contains(acct.CycleEndTime, "T") {
@@ -165,9 +183,9 @@ func ParseCodebuddyUsage(raw []byte, nowMS int64) ([]QuotaWindow, *QuotaPlan, er
 
 	planLabel := "Codebuddy 账户"
 	if hasAnyLimit && totalLimit > 0 {
-		planLabel = fmt.Sprintf("Codebuddy (总额度: %.0f / 剩余: %.0f)", totalLimit, totalRemain)
-	} else if len(payload.Accounts) > 0 {
-		planLabel = fmt.Sprintf("Codebuddy (%s)", payload.Accounts[0].PackageName)
+		planLabel = fmt.Sprintf("Codebuddy (总额度: %.0f / 剩余: %.0f credits)", totalLimit, totalRemain)
+	} else if len(accounts) > 0 {
+		planLabel = fmt.Sprintf("Codebuddy (%s)", accounts[0].PackageName)
 	}
 
 	plan := &QuotaPlan{

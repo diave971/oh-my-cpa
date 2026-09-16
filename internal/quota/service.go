@@ -74,6 +74,7 @@ type CPAClient interface {
 	ApiCall(ctx context.Context, req management.ApiCallRequest) (management.ApiCallResponse, error)
 	ResetQuota(ctx context.Context, authIndex string) error
 	AuthFiles(ctx context.Context) (management.AuthFilesResponse, error)
+	DownloadAuthFile(ctx context.Context, name string) ([]byte, management.ResponseMeta, error)
 }
 
 // Service manages live upstream quota fetching, normalization, and actions.
@@ -594,13 +595,34 @@ func (s *Service) RedeemCodexCredit(ctx context.Context, authIndex string) error
 	return nil
 }
 
-// fetchCodebuddyQuota calls Codebuddy's get-user-resource endpoint via CPA ApiCall.
+// fetchCodebuddyQuota calls Codebuddy's get-user-resource endpoint.
+// Since Codebuddy is a custom plugin provider, CPA's /api-call proxy does not
+// auto-inject accessToken for plugin credentials; we download the file to obtain the token.
 func (s *Service) fetchCodebuddyQuota(ctx context.Context, file management.AuthFile, nowMS int64) (*QuotaPlan, []QuotaWindow, error) {
-	headers := management.WithQuotaCredential(map[string]string{
+	token := ""
+	if s.client != nil {
+		raw, _, err := s.client.DownloadAuthFile(ctx, file.Name)
+		if err == nil && len(raw) > 0 {
+			var parsed struct {
+				Auth struct {
+					AccessToken string `json:"accessToken"`
+				} `json:"auth"`
+			}
+			if json.Unmarshal(raw, &parsed) == nil {
+				token = parsed.Auth.AccessToken
+			}
+		}
+	}
+
+	headers := map[string]string{
 		"Accept":       "application/json",
 		"Content-Type": "application/json",
 		"X-Domain":     "www.codebuddy.cn",
-	})
+		"User-Agent":   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+	}
+	if token != "" {
+		headers["Authorization"] = "Bearer " + token
+	}
 
 	resp, err := s.SafeApiCall(ctx, file.AuthIndex, "POST", "https://www.codebuddy.cn/v2/billing/meter/get-user-resource", headers, "{}")
 	if err != nil {

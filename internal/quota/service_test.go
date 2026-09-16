@@ -38,6 +38,10 @@ func (m *mockCPAClient) AuthFiles(ctx context.Context) (management.AuthFilesResp
 	return management.AuthFilesResponse{}, nil
 }
 
+func (m *mockCPAClient) DownloadAuthFile(ctx context.Context, name string) ([]byte, management.ResponseMeta, error) {
+	return nil, management.ResponseMeta{}, nil
+}
+
 func TestSSRFProtection(t *testing.T) {
 	svc := NewService(&mockCPAClient{})
 
