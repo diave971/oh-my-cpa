@@ -30,10 +30,14 @@ Oh My CPA adds a user-owned identity and organization layer above CLIProxyAPI (C
   `docs/design.md` §2 for the categorical palette this needs and ADR 0006 for why it is a scoped
   exception to the semantic-colour rule. Both panels rank by one of two groupings, chosen per
   **Call Point** or per upstream model and persisted as a Preference; the ranked list also carries each
-  group's priced spend at request-time prices, with the priced share shown when it is partial.
+  group's priced spend at request-time prices, with the priced share shown when it is partial. The list
+  reads name, spend, volume, share, and its three numeric columns are tracks declared once on the list
+  rather than per row, so a group's spend, volume and share start on the same edge as every other
+  group's regardless of how wide any single amount happens to be.
 - **Filter Dimension**: One axis of the request-record filter, such as model, provider or credential. Dimensions combine with AND and the values inside one dimension combine with OR, so adding a value widens a dimension while adding a dimension narrows the result. An absent dimension does not narrow at all — a cleared filter must be indistinguishable from one that was never set, which is why absence rather than an empty value is how "not filtering" is expressed everywhere the filter is stored or serialized.
 - **Auto Refresh**: A boolean on the request-record view, not an interval. The cadence is fixed at 10 seconds, because the operator only ever wants one of two answers — keep this list current, or stop moving it. Polling is a wall-clock cadence and skips a tick rather than queueing one, so a slow query cannot build a backlog that fires the moment it resolves.
 - **Client Key Alias**: The operator-assigned name for one gateway client key, stored in `client_key_aliases` and keyed by `(instance_id, usage fingerprint)`. It is Oh My CPA metadata, not CPA configuration: the secret stays in CPA's document and naming a key never writes that document. The identity is the keyed fingerprint that `usage_events.api_group_key` carries (HMAC purpose `usage-api-key`), never a configuration array index and never the display mask — an index moves when CPA reorders its `api-keys` list, and a mask is not unique because it preserves only a short head and tail. Aliases are deliberately never pruned: historical requests keep their fingerprint forever, so a deleted key's records still need their name, and a rename is read-time resolution rather than a rewrite of stored usage. Duplicate names are allowed, because a name is a label rather than an identity. Where no name exists, every surface falls back to the mask.
+- **Streaming Usage Record**: Whether CPA executed a request in streaming mode, captured from CPA's `stream` field into `usage_events.stream` (`1` for streaming, `0` for non-streaming, `NULL` for historical rows where the flag was not recorded). The flag is operator-facing metadata, not the sole classifier for TTFT validity: an upstream executor can capture a genuine first-token boundary even when the client requested `stream: false`. Derived metrics therefore use the residual window `latency_ms - ttft_ms`: **TPS** uses the generation-phase rate `output / (latency - ttft)` when the window is at least `MIN_STREAMING_GENERATION_WINDOW_MS` (50 ms), and otherwise falls back to the end-to-end average `output / latency`; the recorded `stream` flag does not override that decision. A collapsed window means the proxy observed the response at completion rather than a progressive stream, so subtracting it would create timer artifacts such as 768,588 t/s. Presentation shows TTFT only when the window is measurable and shows the non-stream badge when an explicit `stream: false` record has no measurable TTFT or when the residual window collapsed. Historical records (`stream IS NULL`) use the same residual-window heuristic.
 
 ## Naming rule
 
@@ -156,10 +160,12 @@ palette in code; never hardcode colors in components.
   (300K, 300M, 1.2B), `zh` (30万, 300万, 12亿) or `full` (300,000,000) — stored as
   the `omc_token_style` preference and applied by one shared frontend layer
   (`web/src/types/tokenDisplay.ts`) so every token readout on the dashboard,
-  the request records and the detail drawer changes together. Tooltips and
-  accessible names always carry the exact count, because a rounded value scanned
-  in a chart is fine while the same rounding in a tooltip would be a wrong
-  number presented as exact. The Chinese scale is a *word*, not just a notation,
+  the request records and the detail drawer changes together. The abbreviation is
+  a reading, never a loss: every surface that prints a rounded token number keeps
+  the exact count reachable beside it — as the value's own `title`, or in the
+  accessible name where the value is decorative — because a rounded value scanned
+  in a chart is fine while the same rounding presented as the only number on offer
+  is a wrong number. The Chinese scale is a *word*, not just a notation,
   so it belongs only to a Chinese console: a stored `zh` resolves to
   `en-compact` whenever the reading language is not Chinese, and the option is
   shown disabled there. The stored value itself is never rewritten, so returning
@@ -215,7 +221,10 @@ palette in code; never hardcode colors in components.
   hovering, because on a field this dense a hover tooltip fires continuously and competes with
   the hover ring. It shows the date, the request count and the token volume, and carries the
   drill-down to that day's request records as an anchor inside it, opening the exact interval the
-  cell aggregated. The cell itself never navigates: the day's list is a place, so it is a link that
+  cell aggregated. Its token volume prints in the console's **Token Unit Style** like every other token
+  readout, keeping the exact count on the value for the reason that style states; the request count is a
+  count rather than a token volume, so it keeps grouped digits whatever the token style is.
+  The cell itself never navigates: the day's list is a place, so it is a link that
   can be opened in a new tab and copied, and a stray click cannot throw the operator out of the
   dashboard.
 - **Recorded Cell**: A cell whose day has a stored record at or after the first stored request. A

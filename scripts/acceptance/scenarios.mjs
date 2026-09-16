@@ -730,8 +730,39 @@ export async function dashboardTokenHeatmap({ base, page, check }) {
   const tooltipText = await tooltip.innerText();
   check('the tooltip names the day', /\d{4}/.test(tooltipText), `tooltip=${JSON.stringify(tooltipText)}`);
   check('the tooltip reports the request count', tooltipText.includes(busiest.requests.toLocaleString('en')), `tooltip=${JSON.stringify(tooltipText)}`);
-  check('the tooltip reports the token volume', tooltipText.includes(busiest.tokens.toLocaleString('en')), `tooltip=${JSON.stringify(tooltipText)}`);
   check('the tooltip offers the drill-down as a link', tooltipText.toLowerCase().includes('view requests'), `tooltip=${JSON.stringify(tooltipText)}`);
+
+  // The token volume reads in the console's unit style, and the exact count stays reachable.
+  //
+  // This is the one token readout on the page that used to bypass the shared display layer and print
+  // its own exact form, so the KPI tiles directly above it obeyed `omc_token_style` while the tooltip
+  // did not - the defect this asserts against. One reader serves both this block and the stored-style
+  // check at the end of the scenario, and it finds the row by its own label rather than by position so
+  // an assertion names the quantity it is about.
+  const tooltipRows = () => tooltip.evaluate((node) => [...node.querySelectorAll('.heatmap-tip-row')].map((row) => ({
+    label: row.querySelector('dt')?.textContent?.trim() ?? '',
+    value: row.querySelector('dd')?.textContent?.trim() ?? '',
+    // The exact count an abbreviated value carries, or null when the row prints it directly.
+    exact: row.querySelector('dd')?.getAttribute('title'),
+  })));
+  const tokenRowOf = (rows) => rows.find((row) => /^(Tokens|Token \u7528\u91cf)$/.test(row.label));
+
+  const styledTokens = tokenRowOf(await tooltipRows());
+  // The default style is the compact one, so the fixture's busiest day (100,000) must read as a
+  // suffixed abbreviation. Asserted as a positive shape for the reason the OMC-settings scenario
+  // states: "not the grouped digits" would also pass on a value that never rendered at all.
+  check(
+    'the tooltip prints its token volume in the console\'s unit style',
+    styledTokens !== undefined && /^\d+(\.\d+)?[KMBT]$/.test(styledTokens.value),
+    `tokens=${JSON.stringify(styledTokens)}`,
+  );
+  // An abbreviation is a rounded claim, so the number it rounded must remain reachable - the same
+  // arrangement the model panels' tooltips use.
+  check(
+    'the abbreviated volume keeps its exact count',
+    styledTokens?.exact === busiest.tokens.toLocaleString('en'),
+    `exact=${JSON.stringify(styledTokens?.exact)} expected=${busiest.tokens.toLocaleString('en')}`,
+  );
 
   // The drill-down is a real anchor: it can be opened in a new tab and copied, and clicking the
   // cell itself must not navigate - that is what the link is for.
@@ -1102,6 +1133,35 @@ export async function dashboardTokenHeatmap({ base, page, check }) {
     "the tooltip's link opens the request list on that day's own bounds",
     Number(query.from) === busiest.from_ms && Number(query.to) === busiest.to_ms,
     `day=${busiest.day} from=${query.from} to=${query.to} expected=${busiest.from_ms}-${busiest.to_ms}`,
+  );
+
+  // ── the stored unit style governs the tooltip ─────────────────────────────
+  //
+  // The assertion above fixes this readout's *default* form; this one proves the choice is what drives
+  // it. Both directions are needed, and they fail differently: a hardcoded compact form passes the
+  // default check and fails this one, while the panel-local exact form this fixes - which obeyed no
+  // setting at all - fails the default check. The scenario is re-entered rather than the live panel
+  // re-read because the preference is a server-stored document: writing it and refetching is what the
+  // console itself does.
+  //
+  // Run last because it writes a console-wide preference: every earlier check reads the default
+  // reading, and a setting stored mid-flow would silently re-point them.
+  await page.evaluate(async () => {
+    await fetch('/omc/api/v1/preferences/omc_token_style', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify('full'),
+    });
+  });
+  await page.goto(`${base}/dashboard`, { waitUntil: 'domcontentloaded' });
+  await page.locator('.heatmap-grid').waitFor({ timeout: 20_000 });
+  await busiestCell.click();
+  await tooltip.waitFor({ state: 'visible', timeout: 5000 });
+  const tokenRowUnderStoredStyle = tokenRowOf(await tooltipRows());
+  check(
+    'storing the explicit-digit style switches the tooltip\'s token volume to it',
+    tokenRowUnderStoredStyle?.value === busiest.tokens.toLocaleString('en'),
+    `tokens=${JSON.stringify(tokenRowUnderStoredStyle)}`,
   );
 }
 
@@ -1846,6 +1906,16 @@ export async function dashboardModelPanels({ base, page, check }) {
       tokens: row.querySelector('.model-usage-tokens').textContent,
       tokensTitle: row.querySelector('.model-usage-tokens').getAttribute('title'),
       share: row.querySelector('.model-usage-share').textContent,
+      cost: row.querySelector('.model-usage-cost').textContent,
+      // The cells' own left edges, so the reading order can be asserted as geometry rather than by
+      // trusting the markup order - a row whose columns were reordered by CSS would still serialise
+      // in DOM order, and the operator reads the painted positions.
+      lefts: {
+        name: Math.round(row.querySelector('.model-usage-name').getBoundingClientRect().left),
+        cost: Math.round(row.querySelector('.model-usage-cost').getBoundingClientRect().left),
+        tokens: Math.round(row.querySelector('.model-usage-tokens').getBoundingClientRect().left),
+        share: Math.round(row.querySelector('.model-usage-share').getBoundingClientRect().left),
+      },
       color: getComputedStyle(row.querySelector('.model-usage-swatch')).backgroundColor,
     })),
   );
@@ -1863,6 +1933,125 @@ export async function dashboardModelPanels({ base, page, check }) {
     'every row states a name, a volume and a share',
     list.every((row) => row.name.length > 0 && /[\d.]/.test(row.tokens) && /%/.test(row.share)),
     JSON.stringify(list.map((row) => `${row.name}=${row.tokens}/${row.share}`)),
+  );
+  // Every row carries the cost cell, including the folded remainder: a spend column that appeared
+  // only on some rows would make the column's presence depend on what happened to be priced.
+  check(
+    'every row states a cost',
+    list.every((row) => typeof row.cost === 'string' && row.cost.trim().length > 0),
+    JSON.stringify(list.map((row) => `${row.name}=${row.cost}`)),
+  );
+  // The reading order is name, cost, volume, share. Asserted as painted geometry: the columns must
+  // advance left to right in that order on every row, which is what a reader's eye follows and what
+  // a CSS reorder could break without touching the markup order.
+  const misordered = list.filter((row) => !(row.lefts.name < row.lefts.cost && row.lefts.cost < row.lefts.tokens && row.lefts.tokens < row.lefts.share));
+  check(
+    'the columns read name, cost, volume, share',
+    misordered.length === 0,
+    JSON.stringify(list.map((row) => row.lefts)),
+  );
+  // Each numeric column starts on one edge down the whole list. The tracks are declared once on the
+  // list, so this is what proves the rows share them: with a track set per row instead, a row whose
+  // cost happens to be a character wider shifts its own volume and share cells and the column edges
+  // scatter - which is invisible on a fixture whose costs all share a width, and which is why the
+  // spread is asserted as zero rather than as "close".
+  // Sharing the list's tracks must not cost the row its own box. Dissolving the row to inherit them
+  // also dissolves its gap and its separator: the swatch ends up against the name and the rule under
+  // the row withdraws into the column gaps, drawn as fragments. Both are asserted here because both
+  // are invisible to a markup-order check and to the column-edge check above.
+  const rowBoxes = await page.evaluate(() =>
+    [...document.querySelectorAll('.model-usage-row')].map((row) => {
+      const swatch = row.querySelector('.model-usage-swatch').getBoundingClientRect();
+      const name = row.querySelector('.model-usage-name').getBoundingClientRect();
+      const box = row.getBoundingClientRect();
+      return {
+        swatchToName: Math.round(name.left - swatch.right),
+        width: Math.round(box.width),
+        borderBottom: getComputedStyle(row).borderBottomWidth,
+      };
+    }),
+  );
+  check(
+    'the swatch is set apart from the name it marks',
+    rowBoxes.every((row) => row.swatchToName >= 6),
+    JSON.stringify(rowBoxes.map((row) => row.swatchToName)),
+  );
+  // The separator is the row's, not each cell's: a rule drawn per cell stops at every column gap. All
+  // rows therefore share one width, and only the last one drops its border.
+  check(
+    'the row keeps one box wide enough to carry a single unbroken separator',
+    new Set(rowBoxes.map((row) => row.width)).size === 1
+      && rowBoxes.slice(0, -1).every((row) => row.borderBottom === '1px')
+      && rowBoxes.at(-1).borderBottom === '0px',
+    JSON.stringify(rowBoxes.map((row) => [row.width, row.borderBottom])),
+  );
+  const columnSpread = (key) => {
+    const lefts = list.map((row) => row.lefts[key]);
+    return Math.max(...lefts) - Math.min(...lefts);
+  };
+  const spreads = { cost: columnSpread('cost'), tokens: columnSpread('tokens'), share: columnSpread('share') };
+  check(
+    'every numeric column starts on one edge down the list',
+    spreads.cost === 0 && spreads.tokens === 0 && spreads.share === 0,
+    JSON.stringify(spreads),
+  );
+  // The name column is the one part of the row that cannot be abbreviated, so it holds a floor while
+  // the ring yields. Asserted across a sweep of widths rather than at the default one: the failure
+  // this guards is the shrinking card, and at 1440px the fixture's own name widths already exceed the
+  // floor - a single measurement there passes whether or not the floor exists.
+  //
+  // The viewport is a *proxy* for the card's width and the panel chooses its arrangement by the card's
+  // own width, so the sweep is what covers both of the panel's arrangements and the handover between
+  // them. It ends by restoring the default, which the checks below still assume.
+  const sweepWidths = [1920, 1600, 1460, 1450, 1440, 1360, 1280, 1200, 1120, 1040, 900, 700, 500, 390];
+  const sweep = [];
+  for (const width of sweepWidths) {
+    await page.setViewportSize({ width, height: 1000 });
+    await page.locator('.model-usage-row').first().waitFor({ state: 'visible', timeout: 10_000 });
+    // The panel re-lays-out on a resize; waiting a frame keeps the measurement from reading the
+    // arrangement that was on screen before the new width.
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    sweep.push(await page.evaluate((viewport) => {
+      const list = document.querySelector('.model-usage-list');
+      const cardBody = document.querySelector('.model-usage-card .ant-card-body').getBoundingClientRect();
+      const frame = document.querySelector('.model-ring-frame').getBoundingClientRect();
+      const canvas = document.querySelector('.model-ring canvas');
+      const canvasBox = canvas.getBoundingClientRect();
+      const share = document.querySelector('.model-usage-share').getBoundingClientRect();
+      const name = document.querySelector('.model-usage-name').getBoundingClientRect();
+      return {
+        viewport,
+        // How far the list's own columns reach past the box they were given: a positive value is a
+        // cell painted outside the card, which is the clipped-column state.
+        listOverflow: Math.round(list.scrollWidth - list.clientWidth),
+        sharePastCard: Math.round(share.right - cardBody.right),
+        nameWidth: Math.round(name.width),
+        frame: { w: Math.round(frame.width), h: Math.round(frame.height) },
+        canvas: { w: Math.round(canvasBox.width), h: Math.round(canvasBox.height), backing: `${canvas.width}x${canvas.height}` },
+      };
+    }, width));
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  check(
+    'no column is painted outside the card at any width',
+    sweep.every((entry) => entry.listOverflow <= 0 && entry.sharePastCard <= 0),
+    JSON.stringify(sweep.filter((entry) => entry.listOverflow > 0 || entry.sharePastCard > 0)),
+  );
+  check(
+    'the name column stays readable at every width',
+    sweep.every((entry) => entry.nameWidth >= 140),
+    JSON.stringify(sweep.map((entry) => [entry.viewport, entry.nameWidth])),
+  );
+  // The ring gives width to the list, so it must stay a ring: a drawing whose frame is clamped in one
+  // axis while its canvas keeps the other draws an ellipse and misplaces the readout. The canvas's
+  // *backing* store is included because the library sizes it from the container - a square CSS box
+  // over a non-square backing would still paint an ellipse.
+  check(
+    'the ring stays square at every width',
+    sweep.every((entry) => Math.abs(entry.frame.w - entry.frame.h) <= 1
+      && Math.abs(entry.canvas.w - entry.canvas.h) <= 1
+      && entry.canvas.backing.split('x')[0] === entry.canvas.backing.split('x')[1]),
+    JSON.stringify(sweep.map((entry) => [entry.viewport, entry.frame, entry.canvas])),
   );
   // The remainder is labelled, never blank: the API sends an empty model name for it on purpose,
   // because the label is the client's to translate.
@@ -1936,6 +2125,50 @@ export async function dashboardModelPanels({ base, page, check }) {
     'the centre readout sits on the ring\'s painted centre',
     !ringCentring.error && ringCentring.drift.x <= 2 && ringCentring.drift.y <= 2,
     JSON.stringify(ringCentring),
+  );
+
+  // ── the ring's hover states what the ranked list states ───────────────────
+  //
+  // A slice is judged on three things - which group it is, how much it moved, and its share of the
+  // window - and the trend's hover already prints exactly that shape of row, so the ring's must too.
+  // The hovered point is the *midpoint of the first slice*, taken from the share the list reports:
+  // hovering a fixed screen position would depend on the fixture's ranking, and the whole claim here
+  // is that the two surfaces agree about the same group.
+  const firstShare = Number.parseFloat(list[0].share) / 100;
+  const ringCanvas = page.locator('.model-ring canvas').first();
+  await ringCanvas.scrollIntoViewIfNeeded();
+  const ringBox = await ringCanvas.boundingBox();
+  // The band's own mid-radius, measured against the canvas rather than assumed: the ring is inset by
+  // its padding, so a fraction taken from the canvas edge can fall inside the hole or outside the
+  // outer edge, and either miss lands on no slice at all. The band spans the mark's inner to outer
+  // radius, and its midpoint is the point that is inside the arc at every share.
+  const ringRadius = Math.min(ringBox.width, ringBox.height) * 0.38;
+  // G2 sweeps the ring counterclockwise from twelve o'clock, so the first group occupies the arc from
+  // 0 to its share of the circle and its midpoint is half of that. The sign is the observable that
+  // decides whether the probe lands on the slice it names: read the wrong way it hovers the group on
+  // the other side of twelve o'clock, and the assertion below then fails against a correct tooltip.
+  const hoverAngle = -Math.PI / 2 - firstShare * Math.PI;
+  const hoverX = ringBox.x + ringBox.width / 2 + Math.cos(hoverAngle) * ringRadius;
+  const hoverY = ringBox.y + ringBox.height / 2 + Math.sin(hoverAngle) * ringRadius;
+  await page.mouse.move(hoverX, hoverY);
+  // A second move lands on a slightly different pixel: the library's pointer tracking subscribes to
+  // movement, and a single synthetic move onto an already-hovered pixel can be coalesced away.
+  await page.mouse.move(hoverX + 2, hoverY);
+  const ringHover = await until(async () => {
+    const tip = page.locator('.model-ring .omc-tip').first();
+    if ((await tip.count()) === 0) return false;
+    const read = async (selector) => tip.locator(selector).first().innerText().catch(() => '');
+    const name = await read('.omc-tip-name');
+    if (name.length === 0) return false;
+    return { name, value: await read('.omc-tip-value'), share: await read('.omc-tip-share') };
+  }, { label: 'the ring hover readout to appear' }).catch(() => null);
+  check(
+    'the ring hover states the model, its volume and its share',
+    ringHover !== null
+      && ringHover.name === list[0].name
+      && ringHover.value.includes(list[0].tokens)
+      && ringHover.share === list[0].share,
+    `hover=${JSON.stringify(ringHover)} list=${JSON.stringify({ name: list[0].name, tokens: list[0].tokens, share: list[0].share })}`,
   );
 
   // ── no axis label is clipped by the canvas it is drawn in ──────────────────
@@ -2020,6 +2253,94 @@ export async function dashboardModelPanels({ base, page, check }) {
     'neither model card overflows its own width',
     overflow.every((excess) => excess <= 1),
     `overflow=${overflow.join(',')}`,
+  );
+
+  // ── both marks are centred in the card at every width ─────────────────────
+  //
+  // The rings and the trend occupy whatever width the card gives them, so each one's drawing has
+  // to sit on that width's centre. Two independent mechanisms put them off it, and this is the
+  // check that would have caught both of them:
+  //
+  //   - the ring is a fixed 220px frame inside a full-width box, and the box's own distribution of
+  //     that frame decides where it lands once the row stacks on a phone;
+  //   - the trend reserves its own left/right strips for the axis labels, and the library's array
+  //     form for that padding is silently ignored, so the plot fell back to insets computed around
+  //     a y-axis that is hidden - a strip nothing is painted in, which shifted the plot right by
+  //     about 22px at every width rather than only on a phone.
+  //
+  // Ink, not the element box, is what is measured: the canvas always spans the card, and it is the
+  // drawing inside it that was off-centre.
+  const centering = async (label) => {
+    const measured = await page.evaluate(() => {
+      const inkCentre = (selector) => {
+        const canvas = document.querySelector(selector);
+        if (!canvas) return null;
+        const probe = document.createElement('canvas');
+        probe.width = canvas.width;
+        probe.height = canvas.height;
+        const context = probe.getContext('2d');
+        context.drawImage(canvas, 0, 0);
+        const { data } = context.getImageData(0, 0, probe.width, probe.height);
+        let minX = Infinity;
+        let maxX = -1;
+        for (let y = 0; y < probe.height; y += 1) {
+          for (let x = 0; x < probe.width; x += 1) {
+            if (data[(y * probe.width + x) * 4 + 3] > 40) {
+              if (x < minX) minX = x;
+              if (x > maxX) maxX = x;
+            }
+          }
+        }
+        if (maxX < 0) return null;
+        const rect = canvas.getBoundingClientRect();
+        const scale = rect.width / probe.width;
+        return {
+          inkCentre: rect.left + ((minX + maxX) / 2) * scale,
+          canvasCentre: rect.left + rect.width / 2,
+          canvasWidth: rect.width,
+        };
+      };
+      const cardBody = document.querySelector('.model-usage-card .ant-card-body').getBoundingClientRect();
+      const ringFrame = document.querySelector('.model-ring-frame').getBoundingClientRect();
+      return {
+        ringInk: inkCentre('.model-ring canvas'),
+        trendInk: inkCentre('.model-trend canvas'),
+        ringFrameCentre: ringFrame.left + ringFrame.width / 2,
+        cardCentre: cardBody.left + cardBody.width / 2,
+        cardWidth: cardBody.width,
+      };
+    });
+    const drifts = {
+      ringInk: measured.ringInk ? Math.round(measured.ringInk.inkCentre - measured.ringInk.canvasCentre) : null,
+      trendInk: measured.trendInk ? Math.round(measured.trendInk.inkCentre - measured.trendInk.canvasCentre) : null,
+      ringFrame: Math.round(measured.ringFrameCentre - measured.cardCentre),
+    };
+    check(
+      `the ring's drawing is centred in its card (${label})`,
+      drifts.ringInk !== null && Math.abs(drifts.ringInk) <= 2,
+      `drift=${drifts.ringInk} cardWidth=${Math.round(measured.cardWidth)}`,
+    );
+    check(
+      `the trend's drawing is centred in its canvas (${label})`,
+      drifts.trendInk !== null && Math.abs(drifts.trendInk) <= 2,
+      `drift=${drifts.trendInk} cardWidth=${Math.round(measured.cardWidth)}`,
+    );
+    return drifts;
+  };
+
+  const desktopDrift = await centering('desktop');
+  // The phone width is where the row stacks, which is the arrangement that exposed the ring's
+  // frame being left-aligned rather than centred.
+  await page.setViewportSize({ width: 390, height: 900 });
+  await page.locator('.model-usage-row').first().waitFor({ state: 'visible', timeout: 10_000 });
+  const phoneDrift = await centering('phone');
+  // Only in the stacked layout: on a desktop width the ring is a peer of the list beside it, so its
+  // frame sits where that row puts it and *not* on the card's centre - asserting card-centring there
+  // would forbid the layout the panel is designed around.
+  check(
+    'the ring\'s frame is centred in the stacked layout',
+    Math.abs(phoneDrift.ringFrame) <= 2 && Math.abs(desktopDrift.ringFrame) > 2,
+    `phone=${phoneDrift.ringFrame} desktop=${desktopDrift.ringFrame}`,
   );
 }
 
@@ -2633,9 +2954,112 @@ export async function omcSettings({ base, page, check, context }) {
     JSON.stringify(controlOverflow),
   );
 
+  // ── the control still fits, and is still legible, on a phone ──────────────
+  //
+  // Both of this page's layout defects were phone-only, and the desktop pass above cannot see
+  // either. The picker's track is the sum of its labels, and on a narrow card that sum exceeded the
+  // card: the third option was painted past its edge. Making the picker a vertical list is the fix,
+  // and it is asserted by geometry on every option rather than by the presence of the library's
+  // `block` class - the class was applied while the items were still clipped, because the root kept
+  // its content width until the stylesheet widened it.
+  const narrowOverflow = async () => page.evaluate(() => {
+    const card = document.querySelector('.omc-settings-page .settings-group').getBoundingClientRect();
+    return [...document.querySelectorAll('.omc-settings-page .ant-segmented-item')].map((item) => {
+      const rect = item.getBoundingClientRect();
+      const label = item.querySelector('.ant-segmented-item-label') ?? item;
+      return {
+        text: item.textContent,
+        pastCardEdge: Math.round(rect.right - card.right),
+        // Clipping is the other half of "it does not fit", and the half a narrow card reaches first:
+        // the row shrank its options until they fitted, which squeezed each label's box below the
+        // width its own text needs. The option then reads as an ellipsis rather than as a choice, so
+        // fitting is asserted as "inside the card *and* showing its whole label".
+        clippedBy: Math.max(0, Math.round(label.scrollWidth - label.getBoundingClientRect().width)),
+      };
+    });
+  });
+  /**
+   * Waits until the unit-style picker has taken the shape the current viewport implies.
+   *
+   * That control changes shape in *React*, not in CSS: `vertical={isNarrow} block={isNarrow}` follows
+   * a `matchMedia` change listener, so after `setViewportSize` there is a window in which the new
+   * width is already in force while the old layout is still painted. Waiting for an option to be
+   * *visible* does not close that window - the options are visible in both shapes - which is exactly
+   * how this check flaked: it measured the horizontal row and read every option painted past the
+   * card (a rising ladder such as 85, 184, 283) while asserting the vertical list. The geometry *is*
+   * the assertion, so the wait has to be on the geometry: stacked, the options share one left edge;
+   * in a row, each has its own.
+   *
+   * Scoped to the unit-style picker by its own label rather than to every picker on the page. Only
+   * that one is given `vertical={isNarrow}` - the theme and language pickers are two options wide and
+   * stay horizontal at every width - so a page-wide "all options share an edge" condition would wait
+   * for a state the page never reaches, which is a hang rather than a fix. The label is the same
+   * bilingual pair this scenario's row locator uses, so a console in either reading language resolves
+   * it.
+   *
+   * Bounded by Playwright's own polling rather than a fixed sleep, because how long the listener
+   * takes to fire and React to re-render is exactly what differs between an idle workstation and a
+   * loaded CI runner.
+   */
+  const waitForPickerShape = async (expectVertical) => {
+    await page.waitForFunction((wantVertical) => {
+      const picker = [...document.querySelectorAll('.omc-settings-page .ant-segmented')]
+        .find((candidate) => /^(Token unit style|Token \u8ba1\u91cf\u5355\u4f4d)$/.test(candidate.getAttribute('aria-label') ?? ''));
+      const items = [...(picker?.querySelectorAll('.ant-segmented-item') ?? [])];
+      if (items.length === 0) return false;
+      // One shared left edge means a stacked list; one left edge each means a single row. Exact
+      // equality is right here because the two shapes differ by tens of pixels, far above the
+      // sub-pixel rounding the `Math.round` absorbs.
+      const allShareAnEdge = new Set(items.map((item) => Math.round(item.getBoundingClientRect().left))).size === 1;
+      return wantVertical ? allShareAnEdge : !allShareAnEdge;
+    }, expectVertical, { timeout: 10_000 });
+  };
+
+  const selectionLegibility = async () => page.evaluate(() => {
+    const selected = document.querySelector('.omc-settings-page .ant-segmented-item-selected');
+    const track = selected?.closest('.ant-segmented');
+    const card = document.querySelector('.omc-settings-page .settings-group');
+    const toRGB = (value) => (value.match(/\d+/g) ?? []).slice(0, 3).map(Number);
+    const distance = (left, right) => Math.max(...left.map((channel, index) => Math.abs(channel - right[index])));
+    const selectedFill = toRGB(getComputedStyle(selected).backgroundColor);
+    return {
+      vsTrack: distance(selectedFill, toRGB(getComputedStyle(track).backgroundColor)),
+      vsCard: distance(selectedFill, toRGB(getComputedStyle(card).backgroundColor)),
+    };
+  });
+
+  // 320px, not 390: this is the narrowest console the page is expected to serve, and it is where the
+  // picker's content width most exceeds the card. A wider phone hid the defect - the horizontal row
+  // fitted at 390px once the labels were shortened, so that width could not tell the two layouts
+  // apart, and the check passed against the broken one.
+  await page.setViewportSize({ width: 320, height: 900 });
+  await waitForPickerShape(true);
+  const phoneOverflow = await narrowOverflow();
+  check(
+    'every settings option fits the card on a phone and shows its whole label',
+    phoneOverflow.every((entry) => entry.pastCardEdge <= 1 && entry.clippedBy <= 1),
+    JSON.stringify(phoneOverflow),
+  );
+  // The selected option has to be distinguishable from *both* surfaces it touches: the track it
+  // slides in, and the card behind that track. The light palette rendered it as the same white as
+  // both, so the control showed no selection at all there while the dark theme looked fine - which
+  // is why this is asserted as a contrast between fills rather than as a specific colour.
+  const legibility = await selectionLegibility();
+  check(
+    'the selected option is distinguishable from its track and its card',
+    legibility.vsTrack >= 8 && legibility.vsCard >= 8,
+    JSON.stringify(legibility),
+  );
+  // Back to the probe's default width: the checks that follow read the desktop console, and their
+  // geometry is what the assertions below compare against. The shape is awaited for the same reason
+  // it is at 320px - a stale vertical list would leave the picker laid out as the phone's, and the
+  // desktop pass that follows reads this control's own geometry.
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await waitForPickerShape(false);
+
   // ── the Chinese scale is offered to Chinese consoles only ─────────────────
   const tokenRow = page.locator('.omc-settings-page .settings-toggle-row').filter({ hasText: /Token unit style|Token 计量单位/ });
-  const chineseOption = tokenRow.locator('.ant-segmented-item').filter({ hasText: /Chinese|中文单位/ });
+  const chineseOption = tokenRow.locator('.ant-segmented-item').filter({ hasText: /万\/亿/ });
   check(
     'the Chinese unit style is shown but disabled on an English console',
     (await chineseOption.count()) === 1 && (await chineseOption.locator('input').isDisabled()),
@@ -2737,7 +3161,7 @@ export async function omcSettings({ base, page, check, context }) {
   check('switching the language on this page re-renders the console', becameChinese);
   check(
     'the Chinese unit style becomes selectable once the console is Chinese',
-    !(await tokenRow.locator('.ant-segmented-item').filter({ hasText: /中文单位/ }).locator('input').isDisabled()),
+    !(await tokenRow.locator('.ant-segmented-item').filter({ hasText: /万\/亿/ }).locator('input').isDisabled()),
   );
 }
 

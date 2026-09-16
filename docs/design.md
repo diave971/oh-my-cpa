@@ -301,7 +301,10 @@ Rules:
    its accessible name and in its tooltip, so the shade is never the only encoding — and a key exists
    to explain what a *stepped* scale's bands mean, which a continuous ramp does not have. The shade is
    relative to the window, so a swatch ladder would describe the field's own range rather than any
-   fixed quantity. The numbers are one click away, which is where a reader who wants them goes.
+   fixed quantity. The numbers are one click away, which is where a reader who wants them goes. The
+   tooltip's token volume prints in the console's **Token Unit Style** — the same layer the KPI tiles
+   above it read — with the exact count on the value, while the request count keeps grouped digits
+   because it is not a token volume.
 6. **The tooltip opens on click, not hover.** On a field this dense a hover tooltip fires
    continuously as the pointer crosses it and competes with the hover ring for the same gesture.
    A click is deliberate, and it leaves the tooltip open to be read and followed. The drill-down is
@@ -445,6 +448,31 @@ under the smallest step rather than as `0%`, which would claim a model carried n
 **Both marks are native `@ant-design/charts` components** (`Line` and `Pie`) inside the existing lazily
 loaded `vendor-charts` chunk, and both disable animation per §7 rule 5. The ring is not a chart-runtime
 heatmap, so ADR 0005's DOM grid is untouched.
+
+**The usage list's columns are one grid, not one per row.** The tracks are declared on the list and the
+rows inherit them as a subgrid. Per-row tracks resolve against each row's own content, so one amount a
+character wider than its neighbours shifts that row's volume and share cells to the right and the
+numeric columns stop lining up down the card - and a column that does not line up cannot be compared
+downward, which is the whole reason the list is ranked. A subgrid rather than `display: contents`:
+dissolving the row to inherit the tracks also dissolves the row's own gap and separator, leaving the
+swatch against the name and the rule drawn in fragments between the columns.
+
+**The ring yields width to the list, down to a floor, and the panels stack by the card's width.** The
+list's numeric columns cannot be abbreviated, so the name column loses that race whenever the ring
+insists on its full size - and a model name truncated to a handful of characters identifies nothing.
+The ring therefore shrinks before the name does, and once neither fits, the two stack. That decision is
+taken on the *card's* inline size via a container query, not on the viewport: the card is half the grid
+at some viewports and the full width at others, so a viewport breakpoint would stack the panels at a
+width where the row still fits and keep them side by side at one where it does not. The ring's frame is
+kept square by CSS through the whole range, because a frame clamped in one axis while the canvas keeps
+the other draws an ellipse.
+
+**The ring hover states the group, its volume and its share**, matching the trend's tooltip rather than
+the share being left to the list alone. A slice is read as a fraction of the ring, so the percentage is
+part of what is being pointed at; it is derived from the same window total the centre reports, so the
+readout and the centre cannot disagree. The group's name comes from the datum through the mark's own
+tooltip items - the library's inferred item is built from the y channel, so every slice would otherwise
+be labelled after the field it plots.
 
 ### Caller-key display mask
 
