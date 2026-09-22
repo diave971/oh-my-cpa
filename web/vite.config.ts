@@ -41,7 +41,14 @@ export default defineConfig(({ command }) => ({
     host: '0.0.0.0',
     strictPort: true,
     proxy: {
-      '/omc/api': {
+      // A regex rather than the plain prefix '/omc/api', because the dev server's
+      // proxy matches string keys by prefix and would then also swallow the SPA
+      // route '/omc/api-keys': loading or reloading that page in `pnpm dev` was
+      // proxied to the backend, which answered with the SPA shell whose asset
+      // hashes belong to another build, and the route rendered blank. The API
+      // surface is always '/api/<something>' (the Go router hangs every route off
+      // '/api/'), so requiring the trailing slash keeps the two apart.
+      '^/omc/api/': {
         // Follow OMCPA_LISTEN_ADDR so a taken default port only needs a .env
         // change; OMCPA_API_TARGET overrides the resolved address.
         target: resolveApiTarget(repoRoot),
@@ -76,7 +83,12 @@ export default defineConfig(({ command }) => ({
           ) {
             return 'vendor-charts';
           }
-          if (id.includes('node_modules/react') || id.includes('node_modules/react-dom') || id.includes('node_modules/react-router-dom')) {
+          if (
+            id.includes('node_modules/react/') ||
+            id.includes('node_modules/react-dom/') ||
+            id.includes('node_modules/react-router/') ||
+            id.includes('node_modules/react-router-dom/')
+          ) {
             return 'vendor-react';
           }
           if (id.includes('node_modules/@ant-design/icons') || id.includes('node_modules/antd')) {

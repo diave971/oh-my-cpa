@@ -17,8 +17,9 @@ import {
   DeleteOutlined,
   AppstoreOutlined,
 } from '@ant-design/icons';
-import { LobeIcon, getProviderDefaultIcon } from '../LobeIcon';
-import { getCredentialProviderMetadata } from '../common/providerMetadata';
+import { credentialProviderIconId } from '../common/providerMetadata';
+import { isDemoMode } from '../../types/demoMode';
+import { ProviderBrandIcon } from '../LobeIcon';
 import { useT } from '../../i18n';
 import type { ManagementAuthFile } from '../../types/managementAuthFile';
 import {
@@ -34,6 +35,8 @@ const { Text, Paragraph } = Typography;
 
 export interface AuthFileCardProps {
   file: ManagementAuthFile;
+  /** Logo published by the plugin that registers this provider, when it has one. */
+  pluginLogo?: string;
   selected: boolean;
   compact?: boolean;
   busy: boolean;
@@ -47,6 +50,7 @@ export interface AuthFileCardProps {
 
 export const AuthFileCard: React.FC<AuthFileCardProps> = ({
   file,
+  pluginLogo,
   selected,
   compact,
   busy,
@@ -59,11 +63,14 @@ export const AuthFileCard: React.FC<AuthFileCardProps> = ({
 }) => {
   const t = useT();
   const provider = providerOf(file);
-  const meta = getCredentialProviderMetadata(provider);
-  const iconId = meta.iconId || getProviderDefaultIcon(provider, file.name);
+  const iconId = credentialProviderIconId(provider, file.name);
   const identity = deriveAuthFileIdentity(file);
 
   const disabled = isAuthFileDisabled(file);
+  // Downloading credential material and deleting a credential are the two things the
+  // demonstration refuses outright; the server refuses them too, and this is what keeps
+  // the button from offering something that cannot happen.
+  const isDemo = isDemoMode();
   const problem = isAuthFileProblem(file);
   const hasWarning = hasAuthFileStatusWarning(file);
 
@@ -114,7 +121,7 @@ export const AuthFileCard: React.FC<AuthFileCardProps> = ({
       style={{
         borderColor: selected ? 'var(--accent)' : undefined,
         opacity: disabled ? 0.72 : 1,
-        transition: 'border-color 0.15s ease',
+        transition: 'border-color var(--motion-fast)',
       }}
       styles={{
         body: {
@@ -148,7 +155,7 @@ export const AuthFileCard: React.FC<AuthFileCardProps> = ({
             flexShrink: 0,
           }}
         >
-          <LobeIcon iconId={iconId} size={16} />
+          <ProviderBrandIcon iconId={iconId} logo={pluginLogo} size={16} />
         </div>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
           <Tag style={{ margin: 0, fontSize: 11 }}>{file.type || file.provider || 'unknown'}</Tag>
@@ -291,7 +298,7 @@ export const AuthFileCard: React.FC<AuthFileCardProps> = ({
           type="text"
           size="small"
           icon={<DownloadOutlined />}
-          disabled={busy || file.runtime_only}
+          disabled={busy || file.runtime_only || isDemo}
           onClick={onDownload}
           title={t('af.download_one', { name: file.name })}
           aria-label={t('af.download_one', { name: file.name })}
@@ -303,14 +310,14 @@ export const AuthFileCard: React.FC<AuthFileCardProps> = ({
           okText={t('common.delete')}
           cancelText={t('common.cancel')}
           okButtonProps={{ danger: true }}
-          disabled={busy || file.runtime_only}
+          disabled={busy || file.runtime_only || isDemo}
         >
           <Button
             type="text"
             danger
             size="small"
             icon={<DeleteOutlined />}
-            disabled={busy || file.runtime_only}
+            disabled={busy || file.runtime_only || isDemo}
             title={t('af.delete_one', { name: file.name })}
             aria-label={t('af.delete_one', { name: file.name })}
           />

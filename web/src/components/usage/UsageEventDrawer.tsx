@@ -12,17 +12,23 @@ import { useQuery } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import { api } from '../../api/client';
 import { useT } from '../../i18n';
+import { isDemoMode } from '../../types/demoMode';
+import { copyText } from '../../utils/clipboard';
+import { maskKeyText } from '../../utils/maskKey';
 import { useTokenDisplayStyle } from '../../types/tokenDisplayContext';
 import { formatTokens, formatTokensFull } from '../../types/tokenDisplay';
 import type { UsageEvent } from '../../types/usageEvents';
 import {
   resolveCredential,
-  requestGroupName,
+  type CredentialIndex,
+} from '../../types/usageEventIdentity';
+import {
   formatEventDuration,
   hasMeasurableTTFT,
   isNonStreamingEvent,
-  type CredentialIndex,
-} from '../../types/usageEventView';
+} from '../../types/usageEventMetrics';
+import { requestGroupName } from '../../types/usageEventLabels';
+import { useOverlayHistory } from '../../hooks/useOverlayHistory';
 
 export interface UsageEventDrawerProps {
   eventId: number | null;
@@ -40,11 +46,20 @@ export const UsageEventDrawer: React.FC<UsageEventDrawerProps> = ({
   onSelectEvent,
 }) => {
   const t = useT();
+  const isDemo = isDemoMode();
   // The drawer's token cards follow the console's unit style; the values are
   // exact counts, so the full form is what this surface prints.
   const { style: tokenStyle } = useTokenDisplayStyle();
   const { message } = AntdApp.useApp();
   const [downloadModalOpen, setDownloadModalOpen] = React.useState(false);
+
+  // The drawer and the download confirmation over it are two overlays on one stack, so Back
+  // closes the confirmation first and the record second - the order the reader sees them in.
+  useOverlayHistory({ isOpen: eventId != null, onClose });
+  useOverlayHistory({
+    isOpen: downloadModalOpen && eventId != null,
+    onClose: () => setDownloadModalOpen(false),
+  });
   const [downloading, setDownloading] = React.useState(false);
   const [tab, setTab] = React.useState('overview');
   React.useEffect(() => {
@@ -58,6 +73,16 @@ export const UsageEventDrawer: React.FC<UsageEventDrawerProps> = ({
   });
   const event = result.data?.event;
   const identity = event ? resolveCredential(event, credentials) : undefined;
+  // The upstream credential that answered, as the record's own response reported
+  // it. Re-rendered from whatever arrived so this surface cannot print a value the
+  // server never masked, and absent when the credential could not be identified.
+  const providerKeyMask = maskKeyText(event?.provider_key_mask);
+  // Rendered only when the server identified the credential: a record it cannot
+  // attribute prints nothing here, the same as it prints no key line in the list,
+  // rather than a row that reads like a fact which failed to load.
+  const providerKeyFields: Array<[string, React.ReactNode]> = providerKeyMask
+    ? [[t('events.provider_key'), providerKeyMask]]
+    : [];
   const errors = result.data?.related_errors || [];
   const missing = <span className="terminal-muted">{t('events.not_captured')}</span>;
   const value = (text: string | null | undefined) => text || missing;
@@ -76,12 +101,11 @@ export const UsageEventDrawer: React.FC<UsageEventDrawerProps> = ({
     </section>
   );
   const copy = async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
+    if (await copyText(text)) {
       message.success(t('res.copied'));
-    } catch {
-      message.error(t('events.copy_failed'));
+      return;
     }
+    message.error(t('events.copy_failed'));
   };
   const download = async () => {
     if (eventId == null || !event?.request_id) return;
@@ -322,6 +346,7 @@ export const UsageEventDrawer: React.FC<UsageEventDrawerProps> = ({
                       t('events.routing'),
                       fields([
                         [t('events.provider'), value(event.provider)],
+                        ...providerKeyFields,
                         [t('events.credential'), value(identity?.name)],
                         [
                           t('events.identity_basis'),
@@ -545,7 +570,10 @@ export const UsageEventDrawer: React.FC<UsageEventDrawerProps> = ({
                         <Button
                           aria-label={t('events.download_log')}
                           icon={<DownloadOutlined />}
-                          disabled={!event.has_request_log || !event.request_id}
+                          // A request log quotes the request itself, so the demonstration
+                          // keeps it out of reach; the server refuses the download as well.
+                          disabled={!event.has_request_log || !event.request_id || isDemo}
+                          title={isDemo ? t('demo.blocked') : undefined}
                           onClick={() => setDownloadModalOpen(true)}
                         >
                           {t('events.download_log')}

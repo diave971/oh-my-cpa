@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/oh-my-cpa/oh-my-cpa/internal/demo"
 	"github.com/oh-my-cpa/oh-my-cpa/internal/repository"
 	"github.com/oh-my-cpa/oh-my-cpa/internal/usage/ingest"
 )
@@ -169,6 +170,18 @@ func (h *Handler) SetUsagePipeline(pipeline usagePipeline) {
 // This is deliberate: CPA's usage queue is destructive and short-lived, so the
 // history the UI promises can only come from records we captured ourselves. It
 // also means the dashboard keeps working while CPA is offline.
+func (h *Handler) resolveDashboardAPIKey(request *http.Request) string {
+	raw := strings.TrimSpace(request.URL.Query().Get("api_key"))
+	if raw == "" || h.repo == nil {
+		return ""
+	}
+	fp, err := h.repo.UsageClientKeyFingerprint(raw)
+	if err != nil {
+		return raw
+	}
+	return fp
+}
+
 func (h *Handler) dashboard(writer http.ResponseWriter, request *http.Request) {
 	writer.Header().Set("Cache-Control", "no-store")
 
@@ -187,7 +200,8 @@ func (h *Handler) dashboard(writer http.ResponseWriter, request *http.Request) {
 	defer cancel()
 
 	response := newDashboardResponse(window)
-	facts, err := h.queryDashboard(ctx, window)
+	apiKey := h.resolveDashboardAPIKey(request)
+	facts, err := h.queryDashboard(ctx, window, apiKey)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeJSON(writer, http.StatusOK, response)
@@ -249,7 +263,8 @@ func (h *Handler) dashboardTail(writer http.ResponseWriter, request *http.Reques
 		Errors: []string{},
 	}
 
-	facts, err := h.queryDashboard(ctx, window)
+	apiKey := h.resolveDashboardAPIKey(request)
+	facts, err := h.queryDashboard(ctx, window, apiKey)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeJSON(writer, http.StatusOK, response)
@@ -320,14 +335,14 @@ type dashboardFacts struct {
 }
 
 // queryDashboard aggregates the window into response bodies.
-func (h *Handler) queryDashboard(ctx context.Context, window dashboardWindow) (dashboardFacts, error) {
+func (h *Handler) queryDashboard(ctx context.Context, window dashboardWindow, apiKey string) (dashboardFacts, error) {
 	facts := dashboardFacts{
 		requests: dashboardRequests{Series: []dashboardSeriesPoint{}},
 		tokens:   dashboardTokens{Series: []dashboardSeriesPoint{}},
 		metrics:  placeholderDashboardMetrics(),
 	}
-	analytics, err := h.repo.QueryUsageAnalytics(ctx, defaultInstanceID(),
-		window.FromMS, window.ToMS, window.BucketMS)
+	analytics, err := h.repo.QueryUsageAnalyticsFiltered(ctx, defaultInstanceID(),
+		window.FromMS, window.ToMS, window.BucketMS, apiKey)
 	if err != nil {
 		return facts, err
 	}
@@ -390,7 +405,7 @@ func (h *Handler) queryDashboard(ctx context.Context, window dashboardWindow) (d
 	}
 	// Cost comes from immutable request-time snapshots; unpriced and legacy rows
 	// keep the window honest via CostSource instead of a fabricated zero.
-	costStats, err := h.repo.QueryUsageCostWindow(ctx, defaultInstanceID(), window.FromMS, window.ToMS, window.BucketMS)
+	costStats, err := h.repo.QueryUsageCostWindowFiltered(ctx, defaultInstanceID(), window.FromMS, window.ToMS, window.BucketMS, apiKey)
 	if err != nil {
 		return facts, err
 	}
@@ -430,6 +445,18 @@ func (h *Handler) queryDashboard(ctx context.Context, window dashboardWindow) (d
 // dashboardIngestStatus reports the capture/decode/maintenance loops.
 func (h *Handler) dashboardIngestStatus(writer http.ResponseWriter, request *http.Request) {
 	writer.Header().Set("Cache-Control", "no-store")
+	if h.cfg.IsDemoMode {
+		// The demonstration has no collector to report on, so it reports the
+		// deployment its fixture describes instead of a disabled pipeline; see
+		// internal/demo/ingest.go.
+		status, err := demo.IngestStatus(request.Context(), h.repo, time.Now().UTC())
+		if err != nil {
+			writeInternalError(writer, err)
+			return
+		}
+		writeJSON(writer, http.StatusOK, status)
+		return
+	}
 	if h.usage == nil {
 		writeJSON(writer, http.StatusOK, map[string]any{
 			"enabled": false,
@@ -455,6 +482,13 @@ func (h *Handler) dashboardIngestStatus(writer http.ResponseWriter, request *htt
 // the browser must never pop it itself.
 func (h *Handler) refreshUsageIngest(writer http.ResponseWriter, request *http.Request) {
 	writer.Header().Set("Cache-Control", "no-store")
+	if h.cfg.IsDemoMode {
+		// A manual sync in the demonstration is answered locally: it reports a pass
+		// that found an empty queue rather than popping one from a gateway that is
+		// not there.
+		writeJSON(writer, http.StatusOK, demo.RefreshResult())
+		return
+	}
 	if h.usage == nil {
 		// An explicit "disabled" beats an error: the deployment is healthy, it
 		// simply captures nothing, and the page can say exactly that.

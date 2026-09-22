@@ -23,10 +23,10 @@ import type { MenuProps } from 'antd';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { HeaderNav } from './HeaderNav';
 import { NARROW_VIEWPORT_QUERY } from '../../hooks/useIsNarrowViewport';
+import { useOverlayHistory } from '../../hooks/useOverlayHistory';
 import { DataProgress } from './DataProgress';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../api/client';
-import { useThemeMode } from '../../theme/ThemeContext';
 import { BrandArtwork } from './BrandArtwork';
 import { useT, type TFunc } from '../../i18n';
 
@@ -117,13 +117,18 @@ function isNarrowViewport(): boolean {
 export const AppLayout: React.FC = () => {
   const t = useT();
   const { message } = AntdApp.useApp();
-  const { themeMode, toggleTheme } = useThemeMode();
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
   const [isCollapsed, setIsCollapsed] = React.useState(false);
   const [isMobile, setIsMobile] = React.useState(isNarrowViewport);
   const [isMobileNavOpen, setIsMobileNavOpen] = React.useState(false);
+
+  // The sheet is an overlay like any other: Back puts it away rather than leaving the route,
+  // which on a phone is what the hardware button is expected to do. Gated on `isMobile`
+  // because the sheet only exists there, so a rotation that closes it must not leave a
+  // sentinel behind.
+  useOverlayHistory({ isOpen: isMobile && isMobileNavOpen, onClose: () => setIsMobileNavOpen(false) });
 
   React.useEffect(() => {
     const onResize = () => {
@@ -209,6 +214,30 @@ export const AppLayout: React.FC = () => {
     document.documentElement.style.setProperty('--app-sider-width', `${width}px`);
   }, [isMobile, isCollapsed]);
 
+  const cpaState = health ? (health.cpa_connected ? t('shell.connected') : t('shell.offline')) : '—';
+
+  /**
+   * The rail's foot: live CPA connection and version.
+   *
+   * It is one component because both navigations show it. The sheet used to omit it, which meant
+   * the surface a phone actually navigates from was the one surface that could not answer "is the
+   * gateway up" - and that answer is the reason an operator opens this console at all.
+   */
+  const siderFoot = (
+    <div className="app-sider-foot">
+      <div className="app-sider-foot-row">
+        <span>{t('shell.cpa')}</span>
+        <span className="terminal-mono">{cpaState}</span>
+      </div>
+      {health?.version && (
+        <div className="app-sider-foot-row">
+          <span>{t('shell.version')}</span>
+          <span className="terminal-mono">{health.version}</span>
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <Layout
       className="app-shell"
@@ -246,7 +275,7 @@ export const AppLayout: React.FC = () => {
           <div className="app-sider-scroll">{menu}</div>
           {isCollapsed ? (
             <Tooltip
-              title={`${t('shell.cpa')} · ${health ? (health.cpa_connected ? t('shell.connected') : t('shell.offline')) : '—'}`}
+              title={`${t('shell.cpa')} · ${cpaState}`}
               placement="right"
             >
               <div className="app-sider-foot is-collapsed">
@@ -254,18 +283,7 @@ export const AppLayout: React.FC = () => {
               </div>
             </Tooltip>
           ) : (
-          <div className="app-sider-foot">
-            <div className="app-sider-foot-row">
-              <span>{t('shell.cpa')}</span>
-              <span className="terminal-mono">{health ? (health.cpa_connected ? t('shell.connected') : t('shell.offline')) : '—'}</span>
-            </div>
-            {health?.version && (
-              <div className="app-sider-foot-row">
-                <span>{t('shell.version')}</span>
-                <span className="terminal-mono">{health.version}</span>
-              </div>
-            )}
-          </div>
+            siderFoot
           )}
         </Sider>
       )}
@@ -288,14 +306,10 @@ export const AppLayout: React.FC = () => {
             />
           </div>
           <HeaderNav
-            health={health}
             isDiscovering={false}
             onDiscover={() => { void queryClient.invalidateQueries(); message.success(t('common.refresh')); }}
             onLogout={() => logoutMutation.mutate()}
             isLoggingOut={logoutMutation.isPending}
-            themeMode={themeMode}
-            onToggleTheme={toggleTheme}
-            isMobile={isMobile}
           />
         </header>
         <Content className="app-content" ref={contentRef}>
@@ -311,17 +325,23 @@ export const AppLayout: React.FC = () => {
         </Content>
       </Layout>
       {isMobile && (
+        /* The sheet carries the same three parts as the rail - brand, nav, foot - because it is the
+           rail at a phone width, not a menu of links. Its width is bounded in `vw` as well as `px:`
+           at a 320px viewport a fixed 320px sheet leaves no page visible behind the mask, and the
+           reader loses the sense that this is a layer over where they were. The safe-area inset
+           keeps the rail's labels clear of a landscape notch. */
         <Drawer
           placement="left"
           open={isMobileNavOpen}
           onClose={() => setIsMobileNavOpen(false)}
-          width={280}
+          width="min(320px, 86vw)"
           closable={false}
           className="mobile-nav-drawer"
           styles={{ body: { padding: 0, display: 'flex', flexDirection: 'column' } }}
         >
           {brand}
           <div className="app-sider-scroll">{menu}</div>
+          {siderFoot}
         </Drawer>
       )}
     </Layout>

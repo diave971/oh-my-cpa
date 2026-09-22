@@ -137,6 +137,40 @@ func TestMaskForwardedForIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestNormalizeClientAddresses(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{"IPv4", "192.0.2.44", "192.0.2.44"},
+		{"IPv4 with port", "192.0.2.44:43120", "192.0.2.44"},
+		{"IPv6", "2001:db8::1234", "2001:db8::1234"},
+		{"IPv6 with port", "[2001:db8::1234]:443", "2001:db8::1234"},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			got := NormalizeClientIP(test.value)
+			if got == nil || *got != test.want {
+				t.Fatalf("NormalizeClientIP(%q) = %v, want %q", test.value, got, test.want)
+			}
+		})
+	}
+	for _, value := range []string{"", "not-an-ip", "192.0.2.0/24", "192.0.2.44:bad"} {
+		if got := NormalizeClientIP(value); got != nil {
+			t.Fatalf("NormalizeClientIP(%q) = %v, want nil", value, got)
+		}
+	}
+
+	chain := NormalizeForwardedFor("192.0.2.44, [2001:db8::1234]:443, unknown")
+	if chain == nil || *chain != "192.0.2.44, 2001:db8::1234" {
+		t.Fatalf("NormalizeForwardedFor() = %v", chain)
+	}
+	if got := NormalizeForwardedFor("unknown, bad"); got != nil {
+		t.Fatalf("invalid forwarded chain = %v, want nil", got)
+	}
+}
+
 // TestPublicEndpointAcceptsRequestLines covers the label CPA actually
 // publishes. It is a method-prefixed request line, not a URL and not a bare
 // path, so an endpoint-only extractor dropped it and left the field blank.
@@ -248,6 +282,49 @@ func TestMaskSecretKeepsOnlyRecognisableEdges(t *testing.T) {
 	} {
 		if got := NormalizeMask(test.in); got != test.want {
 			t.Fatalf("NormalizeMask(%q) = %q, want %q", test.in, got, test.want)
+		}
+	}
+}
+
+// TestRedactTextCatchesBareVendorPrefixes covers the case where a credential arrives inside a
+// message and nothing else marks it as one - no key, no header, no URL.
+//
+// The pattern matched only a hyphenated separator, so `ghp_...` passed through unredacted. That is
+// the shape a GitHub API error would actually carry, and this feature's feed errors are persisted
+// and logged, so the gap reached both a database column and a log line. The prefixes alternate now
+// because the real ones do: `sk-` for OpenAI and Anthropic, `ghp_`/`gho_`/`ghs_` for GitHub,
+// `glpat-` for GitLab, `xoxb-` for Slack.
+func TestRedactTextCatchesBareVendorPrefixes(t *testing.T) {
+	redacted := []string{
+		"upstream refused ghp_ABCDEFGHIJKLMNOPQRST",
+		"upstream refused gho_ABCDEFGHIJKLMNOPQRST",
+		"upstream refused ghs_ABCDEFGHIJKLMNOPQRST",
+		"upstream refused sk-abcdefghijklmnopqrst",
+		"upstream refused sk-proj-abcdefghijklmnop",
+		"upstream refused glpat-abcdefghijklmnop",
+		"upstream refused xoxb-1234567890-abcdef",
+		// Fine-grained PATs carry an underscore-bearing payload, which the coarse rule does not
+		// cover: the shape GitHub issues today for scoped tokens.
+		"upstream refused github_pat_11ABCDEFG0abcdefghij_klmnopqrstuvwxyz1234567890ABCDEF",
+	}
+	for _, input := range redacted {
+		if got := RedactText(input); got == input {
+			t.Errorf("RedactText(%q) left the credential in place", input)
+		} else if !strings.Contains(got, RedactedValue) {
+			t.Errorf("RedactText(%q) = %q, want it to contain %q", input, got, RedactedValue)
+		}
+	}
+
+	// The negative controls: prose and ordinary URLs must survive untouched, or the pattern would
+	// be corrupting diagnostics rather than protecting them.
+	untouched := []string{
+		"normal prose about a ghp token",
+		"see https://example.test/path for details",
+		"the request failed after 3 attempts",
+	}
+	for _, input := range untouched {
+		if got := RedactText(input); got != input {
+			t.Errorf("RedactText(%q) = %q, want it unchanged", input, got)
 		}
 	}
 }

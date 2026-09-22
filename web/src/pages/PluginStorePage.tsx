@@ -1,6 +1,8 @@
 import React from 'react';
 import {
   Card,
+  Pagination,
+  Spin,
   Table,
   Tag,
   Button,
@@ -21,10 +23,20 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '../api/client';
 import { useT } from '../i18n';
+import { isDemoMode } from '../types/demoMode';
 import type { StorePluginItem } from '../types/plugin';
+import { useIsPhoneViewport } from '../hooks/useIsPhoneViewport';
+import { PhoneRow } from '../components/common/PhoneRow';
+import { phoneRowFields, renderedCell } from '../components/common/phoneRowFields';
+
+/** One page of the list, shared by both renderings so a page means the same thing at either width. */
+const PAGE_SIZE = 20;
 
 export const PluginStorePage: React.FC = () => {
   const t = useT();
+  // Installing a plugin runs third-party code inside the gateway, so the demonstration
+  // refuses it; the button says so instead of failing on click.
+  const isDemo = isDemoMode();
   const navigate = useNavigate();
   const { message } = AntdApp.useApp();
   const queryClient = useQueryClient();
@@ -56,6 +68,14 @@ export const PluginStorePage: React.FC = () => {
       message.error(t('store.install_failed', { msg }));
     },
   });
+
+  const isPhone = useIsPhoneViewport();
+  const [phonePage, setPhonePage] = React.useState(1);
+  // Clamped rather than trusted: the store list is fetched, and a page past the end would render
+  // an empty list with no way back.
+  const lastPhonePage = Math.max(1, Math.ceil(storePlugins.length / PAGE_SIZE));
+  const safePhonePage = Math.min(phonePage, lastPhonePage);
+  const pagedPlugins = storePlugins.slice((safePhonePage - 1) * PAGE_SIZE, safePhonePage * PAGE_SIZE);
 
   const columns: ColumnsType<StorePluginItem> = [
     {
@@ -132,6 +152,8 @@ export const PluginStorePage: React.FC = () => {
           >
             <Button
               size="small"
+              disabled={isDemo}
+              title={isDemo ? t('demo.blocked') : undefined}
               type="primary"
               icon={<DownloadOutlined />}
               loading={installMutation.isPending && installMutation.variables === r.id}
@@ -188,16 +210,50 @@ export const PluginStorePage: React.FC = () => {
       )}
 
       <Card>
-        <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
-          <Table
-            columns={columns}
-            dataSource={storePlugins}
-            rowKey="id"
-            loading={isLoading}
-            pagination={{ pageSize: 20, showSizeChanger: false }}
-            locale={{ emptyText: t('store.empty') }}
-          />
-        </div>
+        {isPhone ? (
+          /* Loading before emptiness: the empty copy is a claim about the store, and it is not true
+             while the first read is still in flight. */
+          isLoading && storePlugins.length === 0 ? (
+            <div className="phone-list-loading">
+              <Spin />
+            </div>
+          ) : storePlugins.length === 0 ? (
+            /* A blocked read is not an empty store. With no cached rows the error alert above is the
+               only true thing on the page, and claiming "no plugins" beside it asserts something the
+               console does not know - the distinction docs/design.md's checklist requires. */
+            isError && !storeData ? null : <p className="empty-copy">{t('store.empty')}</p>
+          ) : (
+            <>
+              {pagedPlugins.map((plugin, index) => (
+                <PhoneRow
+                  key={plugin.id}
+                  identity={renderedCell(columns, 'name', plugin, index)}
+                  fields={phoneRowFields(columns, plugin, { skip: ['name', 'actions'], index })}
+                  actions={renderedCell(columns, 'actions', plugin, index)}
+                />
+              ))}
+              <Pagination
+                size="small"
+                simple
+                current={safePhonePage}
+                pageSize={PAGE_SIZE}
+                total={storePlugins.length}
+                onChange={setPhonePage}
+              />
+            </>
+          )
+        ) : (
+          <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+            <Table
+              columns={columns}
+              dataSource={storePlugins}
+              rowKey="id"
+              loading={isLoading}
+              pagination={{ pageSize: PAGE_SIZE, showSizeChanger: false }}
+              locale={{ emptyText: t('store.empty') }}
+            />
+          </div>
+        )}
       </Card>
     </div>
   );

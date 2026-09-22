@@ -1,7 +1,9 @@
-import React, { memo } from 'react';
+import React, { memo, useEffect, useState } from 'react';
 import { LOBE_ICON_CATALOG, lobeIconSlug } from '../types/lobeIconCatalog';
+import { isRenderableLogoURL } from '../types/pluginOAuthProviders';
 import { CloudServerOutlined } from '@ant-design/icons';
-import { PROVIDER_ICON_IDS, DEFAULT_PROVIDER_ICON_ID } from '../types/providerIconIds';
+
+export { getProviderDefaultIcon } from '../types/providerIconIds';
 
 interface LobeIconProps {
   iconId?: string;
@@ -72,134 +74,65 @@ export const LobeIcon: React.FC<LobeIconProps> = memo(({
   );
 });
 
-interface TocCandidate {
-  kw: string;
-  iconId: string;
-  len: number;
-  priority: number;
+export interface ProviderBrandIconProps {
+  /** Brand mark id from the vendored icon catalog. Empty renders a neutral placeholder. */
+  iconId?: string;
+  /** Logo published by the plugin that owns this provider, when there is one. */
+  logo?: string;
+  size: number;
+  className?: string;
+  style?: React.CSSProperties;
 }
 
-// Flatten the vendored icon catalog into one prioritised lookup list at module
-// load, so a model-name lookup never walks the icon namespace.
-const TOC_CANDIDATES: TocCandidate[] = (() => {
-  const list: TocCandidate[] = [];
-  const seen = new Set<string>();
+/**
+ * The mark for one provider, wherever a provider is shown.
+ *
+ * A plugin's own logo wins over the catalog mark: a plugin knows what its provider
+ * looks like, and installing a plugin cannot update the console's catalog. The
+ * catalog mark is the fallback rather than the default, because a plugin logo is a
+ * network fetch that can fail or be withdrawn, and a provider row that renders
+ * nothing is worse than one rendering the known brand.
+ *
+ * It lives beside the catalog renderer rather than in a component of its own for two
+ * reasons: they answer the same question, and two modules answering it is how a
+ * surface ends up drawing a mark the others do not. A separate module also renames
+ * the shared chunk this code is bundled into, and the bundle budget pins that chunk
+ * by name (`Lobe icon JS`, derived from this file).
+ */
+export const ProviderBrandIcon: React.FC<ProviderBrandIconProps> = ({
+  iconId,
+  logo,
+  size,
+  className,
+  style,
+}) => {
+  const [isLogoBroken, setIsLogoBroken] = useState(false);
 
-  const add = (kw: string | undefined, iconId: string, priority: number) => {
-    const clean = (kw || '').trim().toLowerCase().replace(/[\s\-_]/g, '');
-    if (!clean || clean.length < 2) return;
-    const key = `${clean}::${iconId}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    list.push({ kw: clean, iconId, len: clean.length, priority });
-  };
+  // A swapped logo (a plugin upgrade, or a provider whose plugin changed) starts
+  // from a clean slate, so one broken URL cannot mask the next one forever.
+  useEffect(() => {
+    setIsLogoBroken(false);
+  }, [logo]);
 
-  for (const item of LOBE_ICON_CATALOG) {
-    // 1. Exact ID (e.g. Minimax, OpenCode, DeepSeek) has highest priority
-    add(item.id, item.id, 2);
-    // 2. Title, docsUrl, and parenthesized Chinese/alias names from fullTitle
-    add(item.title, item.id, 1);
-    add(item.docsUrl, item.id, 1);
-    if (item.fullTitle) {
-      add(item.fullTitle, item.id, 1);
-      const m = item.fullTitle.match(/\(([^)]+)\)/);
-      if (m && m[1]) add(m[1], item.id, 1);
-    }
+  // Validated here as well as where the value is resolved: this component is the last
+  // place before a source reaches the DOM, and a caller that hands it a URL straight out
+  // of a manifest must not be able to make the browser load a plugin's host.
+  const trimmedLogo = (logo || '').trim();
+  if (trimmedLogo && !isLogoBroken && isRenderableLogoURL(trimmedLogo)) {
+    return (
+      <img
+        src={trimmedLogo}
+        alt=""
+        width={size}
+        height={size}
+        className={className}
+        style={{ display: 'block', objectFit: 'contain', borderRadius: 4, ...style }}
+        loading="eager"
+        decoding="async"
+        onError={() => setIsLogoBroken(true)}
+      />
+    );
   }
 
-  // Sort by priority desc, then length desc (longer, specific names match first)
-  list.sort((a, b) => b.priority - a.priority || b.len - a.len);
-  return list;
-})();
-
-// Minimal aliases for acronyms and terms where the model/brand acronym differs from icon ID
-const COMMON_ALIASES: Record<string, string> = {
-  'gpt': 'OpenAI',
-  'chatgpt': 'OpenAI',
-  'glm': 'Zhipu',
-  '智谱': 'Zhipu',
-  '通义': 'Qwen',
-  '千问': 'Qwen',
-  '百炼': 'Bailian',
-  '月之暗面': 'Moonshot',
-  '海螺': 'Minimax',
-  '阶跃': 'Stepfun',
-  '跃问': 'Stepfun',
-  '百川': 'Baichuan',
-  '硅基': 'SiliconCloud',
-  '豆包': 'Doubao',
-  '火山': 'Volcengine',
-  '混元': 'Hunyuan',
-  '腾讯': 'Tencent',
-  '讯飞': 'Spark',
-  '星火': 'Spark',
-  '零一': 'ZeroOne',
-  '百度': 'Baidu',
-  '文心': 'Wenxin',
-  '商汤': 'SenseNova',
-  '日日新': 'SenseNova',
-  '深度求索': 'DeepSeek',
-  'llama': 'Meta',
-  'google': 'Gemini',
-  'anthropic': 'Claude',
-  'claude': 'Claude',
-  'gemini': 'Gemini',
-  'antigravity': 'Antigravity',
-  'kimi': 'Kimi',
-  'moonshot': 'Kimi',
-  'xai': 'XAI',
-  'grok': 'XAI',
-  'codex': 'Codex',
-  'vertex': 'Google',
+  return <LobeIcon iconId={iconId} size={size} className={className} style={style} />;
 };
-
-const KNOWN_PROVIDER_ICONS = PROVIDER_ICON_IDS;
-
-export function getProviderDefaultIcon(family: string, name?: string, baseURL?: string): string {
-  const f = (family || '').toLowerCase().trim();
-  const n = (name || '').toLowerCase().trim();
-  const url = (baseURL || '').toLowerCase().trim();
-
-  // 1. Direct match on provider family name
-  if (KNOWN_PROVIDER_ICONS[f]) {
-    return KNOWN_PROVIDER_ICONS[f];
-  }
-
-  const combined = `${f} ${n} ${url}`.trim();
-  const normalized = combined.replace(/[\s\-_./:]/g, '');
-
-  if (normalized) {
-    // 1. Direct match against toc catalog for names with >= 4 characters (e.g. Minimax, OpenCode, FastGPT)
-    for (const c of TOC_CANDIDATES) {
-      if (c.len >= 4 && normalized.includes(c.kw)) {
-        return c.iconId;
-      }
-    }
-
-    // 2. Common aliases & acronyms (e.g. gpt -> OpenAI, glm -> Zhipu, tongyi -> Qwen)
-    for (const [kw, iconId] of Object.entries(COMMON_ALIASES)) {
-      const cleanKw = kw.replace(/[\s\-_]/g, '');
-      if (combined.includes(kw) || normalized.includes(cleanKw)) {
-        return iconId;
-      }
-    }
-
-    // 3. Shorter toc candidates (len 2-3)
-    for (const c of TOC_CANDIDATES) {
-      if (c.len < 4 && normalized.includes(c.kw)) {
-        return c.iconId;
-      }
-    }
-  }
-
-  // Fallback by family
-  if (f.includes('claude') || f.includes('anthropic')) return 'Claude';
-  if (f.includes('gemini') || f.includes('google')) return 'Gemini';
-  if (f.includes('codex')) return 'Codex';
-  if (f.includes('antigravity')) return 'Antigravity';
-  if (f.includes('xai') || f.includes('grok')) return 'XAI';
-  if (f.includes('kimi') || f.includes('moonshot')) return 'Kimi';
-  if (f.includes('qwen')) return 'Qwen';
-  if (f.includes('deepseek')) return 'DeepSeek';
-  return DEFAULT_PROVIDER_ICON_ID;
-}

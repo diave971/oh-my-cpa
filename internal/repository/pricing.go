@@ -122,6 +122,52 @@ func (r *Repository) UpsertModelPrices(ctx context.Context, rows []ModelPrice) e
 	return tx.Commit()
 }
 
+// SeedModelPriceHistoryBackfill writes one price version per row, effective at
+// effectiveFromMS, beside the current rows UpsertModelPrices maintains.
+//
+// It exists for fabricated history. The request-time price lock resolves a
+// version by the request's own timestamp, and the trigger that shadows every
+// price write stamps the moment of the write, so a fixture that fills days the
+// process never observed would find no version and report every fabricated
+// request as unpriced - a demo whose cost column reads zero. Writing the version
+// the fixture is pretending existed keeps the same lock in charge instead of
+// letting the fixture write a cost column directly.
+//
+// The rows must already be priceable: the caller is expected to have written the
+// current rows first, and the effective time must precede the oldest fabricated
+// request.
+func (r *Repository) SeedModelPriceHistoryBackfill(ctx context.Context, rows []ModelPrice, effectiveFromMS int64) error {
+	if err := r.requirePricingSchema(ctx); err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	if effectiveFromMS <= 0 {
+		return errors.New("price backfill requires a positive effective time")
+	}
+	tx, err := r.SQL().BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin price backfill: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, row := range rows {
+		if err := row.Validate(); err != nil {
+			return fmt.Errorf("model price %q: %w", row.Model, err)
+		}
+		if _, errExec := tx.ExecContext(ctx, `
+			INSERT INTO model_price_versions (
+				model, effective_from_ms, available, prompt_price_per_1m, completion_price_per_1m,
+				cache_read_price_per_1m, cache_write_price_per_1m, price_multiplier, source
+			) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)`,
+			row.Model, effectiveFromMS, row.PromptPricePer1M, row.CompletionPer1M,
+			row.CacheReadPer1M, row.CacheWritePer1M, row.PriceMultiplier, row.Source); errExec != nil {
+			return fmt.Errorf("backfill model price version %q: %w", row.Model, errExec)
+		}
+	}
+	return tx.Commit()
+}
+
 // DeleteModelPrice removes one row; history stays in audit events.
 func (r *Repository) DeleteModelPrice(ctx context.Context, model string) (bool, error) {
 	if err := r.requirePricingSchema(ctx); err != nil {
@@ -257,11 +303,22 @@ func (r *Repository) QueryUsageCost(ctx context.Context, instanceID string, from
 // and a rollup cannot preserve which version each row was priced at. So this
 // reads usage_events regardless of which table served the token series.
 func (r *Repository) QueryUsageCostWindow(ctx context.Context, instanceID string, fromMS, toMS, bucketMS int64) (UsageCostStats, error) {
+	return r.QueryUsageCostWindowFiltered(ctx, instanceID, fromMS, toMS, bucketMS, "")
+}
+
+// QueryUsageCostWindowFiltered sums locked request costs, optionally filtered by
+// client API key fingerprint (api_group_key).
+func (r *Repository) QueryUsageCostWindowFiltered(ctx context.Context, instanceID string, fromMS, toMS, bucketMS int64, apiKey string) (UsageCostStats, error) {
 	query := `SELECT COALESCE(TOTAL(cost_nanos), 0) / 1000000000.0,
  COALESCE(SUM(pricing_status = 'priced'), 0), COALESCE(SUM(pricing_status <> 'priced'), 0)
  FROM usage_events WHERE instance_id = ? AND timestamp_ms >= ? AND timestamp_ms <= ?`
+	args := []any{instanceID, fromMS, toMS}
+	if apiKey != "" {
+		query += " AND api_group_key = ?"
+		args = append(args, apiKey)
+	}
 	var stats UsageCostStats
-	if err := r.SQL().QueryRowContext(ctx, query, instanceID, fromMS, toMS).Scan(&stats.CostUSD, &stats.PricedEvents, &stats.UnpricedEvents); err != nil {
+	if err := r.SQL().QueryRowContext(ctx, query, args...).Scan(&stats.CostUSD, &stats.PricedEvents, &stats.UnpricedEvents); err != nil {
 		return UsageCostStats{}, fmt.Errorf("query usage cost: %w", err)
 	}
 	if bucketMS <= 0 {
@@ -272,9 +329,16 @@ func (r *Repository) QueryUsageCostWindow(ctx context.Context, instanceID string
 	// int64: SQLite hands back a float64 and the driver rejects the conversion. Sum
 	// the integer column instead, which is also exact - cost_nanos is integral and
 	// an accumulated float would lose precision over a long window.
-	rows, err := r.SQL().QueryContext(ctx, `SELECT (timestamp_ms / ?) * ? AS aligned, COALESCE(SUM(cost_nanos), 0)
- FROM usage_events WHERE instance_id = ? AND timestamp_ms >= ? AND timestamp_ms <= ?
- GROUP BY aligned ORDER BY aligned ASC`, bucketMS, bucketMS, instanceID, fromMS, toMS)
+	bucketQuery := `SELECT (timestamp_ms / ?) * ? AS aligned, COALESCE(SUM(cost_nanos), 0)
+ FROM usage_events WHERE instance_id = ? AND timestamp_ms >= ? AND timestamp_ms <= ?`
+	bucketArgs := []any{bucketMS, bucketMS, instanceID, fromMS, toMS}
+	if apiKey != "" {
+		bucketQuery += " AND api_group_key = ?"
+		bucketArgs = append(bucketArgs, apiKey)
+	}
+	bucketQuery += " GROUP BY aligned ORDER BY aligned ASC"
+
+	rows, err := r.SQL().QueryContext(ctx, bucketQuery, bucketArgs...)
 	if err != nil {
 		return UsageCostStats{}, fmt.Errorf("query usage cost buckets: %w", err)
 	}

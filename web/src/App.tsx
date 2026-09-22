@@ -6,12 +6,15 @@ import {
 } from 'react-router-dom';
 import { App as AntdApp, ConfigProvider } from 'antd';
 import enUS from 'antd/locale/en_US';
+import msMY from 'antd/locale/ms_MY';
 import zhCN from 'antd/locale/zh_CN';
+import zhTW from 'antd/locale/zh_TW';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { getAppConfig } from './types/config';
-import { createThemeConfig, type ThemeMode } from './theme/themeConfig';
+import { createThemeConfig } from './theme/themeConfig';
 import { AppLayout } from './components/common/AppLayout';
 import { AuthGate } from './components/common/AuthGate';
+import { DemoNotice } from './components/common/DemoNotice';
 
 const UsageEventsPage = React.lazy(() => import('./pages/UsageEventsPage').then(m => ({ default: m.UsageEventsPage })));
 const PricingPage = React.lazy(() => import('./pages/pricing/PricingPage').then(m => ({ default: m.PricingPage })));
@@ -27,10 +30,14 @@ const QuotaPage = React.lazy(() => import('./pages/QuotaPage').then(m => ({ defa
 const SystemPage = React.lazy(() => import('./pages/SystemPage').then(m => ({ default: m.SystemPage })));
 const PluginsPage = React.lazy(() => import('./pages/PluginsPage').then(m => ({ default: m.PluginsPage })));
 const PluginStorePage = React.lazy(() => import('./pages/PluginStorePage').then(m => ({ default: m.PluginStorePage })));
-import { ThemeContext } from './theme/ThemeContext';
+// Lazy like every other route, and not only for consistency: the palette editor pulls in Ant Design's
+// colour picker, which is a large dependency for a page an operator visits once. Loading it eagerly put
+// that cost into the first paint of the console - and into the sign-in screen, which renders this
+// application's shell.
+const OmcSettingsPage = React.lazy(() => import('./pages/OmcSettingsPage').then(m => ({ default: m.OmcSettingsPage })));
+import { ThemeProvider, ThemeServerSync, useTheme } from './theme/ThemeContext';
 import { I18nProvider, useI18n } from './i18n';
 import { TokenDisplayProvider } from './types/tokenDisplayContext';
-import { OmcSettingsPage } from './pages/OmcSettingsPage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -42,55 +49,44 @@ const queryClient = new QueryClient({
   },
 });
 
-interface ThemeContextValue {
-  themeMode: ThemeMode;
-  toggleTheme: () => void;
-}
+const ANTD_LOCALES = {
+  zh: zhCN,
+  'zh-Hant': zhTW,
+  en: enUS,
+  ms: msMY,
+} as const;
 
-export const App: React.FC = () => {
-  const [themeMode, setThemeMode] = React.useState<ThemeMode>(() => {
-    if (typeof window === 'undefined') return 'dark';
-    return window.localStorage.getItem('omc-theme') === 'light' ? 'light' : 'dark';
-  });
+export const App: React.FC = () => (
+  <QueryClientProvider client={queryClient}>
+    <I18nProvider>
+      <ThemeProvider>
+        <ThemedShell />
+      </ThemeProvider>
+    </I18nProvider>
+  </QueryClientProvider>
+);
 
-  React.useEffect(() => {
-    document.documentElement.dataset.theme = themeMode;
-    document.documentElement.style.colorScheme = themeMode;
-    window.localStorage.setItem('omc-theme', themeMode);
-  }, [themeMode]);
-
-  const toggleTheme = React.useCallback(() => {
-    setThemeMode((mode) => mode === 'dark' ? 'light' : 'dark');
-  }, []);
-
-  const themeContextValue = React.useMemo<ThemeContextValue>(
-    () => ({ themeMode, toggleTheme }),
-    [themeMode, toggleTheme],
-  );
-
-  return (
-    <QueryClientProvider client={queryClient}>
-      <I18nProvider>
-        <ThemedProviders themeContextValue={themeContextValue} themeMode={themeMode} />
-      </I18nProvider>
-    </QueryClientProvider>
-  );
-};
-
-// Sits below I18nProvider so the antd locale follows the app language.
-const ThemedProviders: React.FC<{ themeContextValue: ThemeContextValue; themeMode: ThemeMode }> = ({
-  themeContextValue,
-  themeMode,
-}) => {
+/**
+ * Sits below both the theme and locale providers, because Ant Design's tokens and locale are both
+ * projections: the theme decides every colour, the language decides date and number formats.
+ *
+ * `ThemeServerSync` is rendered here rather than inside `ThemeProvider` for one reason - it reports
+ * a refused save through Ant Design's message API, and `App` is the first component that provides
+ * one. The theme itself does not wait for it: the console is painted from the browser's own stored
+ * preference in the first frame, and the deployment's copy is reconciled afterwards.
+ */
+const ThemedShell: React.FC = () => {
   const { lang } = useI18n();
+  const { theme } = useTheme();
+  const antdTheme = React.useMemo(() => createThemeConfig(theme), [theme]);
   return (
-    <ConfigProvider locale={lang === 'zh' ? zhCN : enUS} theme={createThemeConfig(themeMode)}>
+    <ConfigProvider locale={ANTD_LOCALES[lang]} theme={antdTheme}>
       <AntdApp>
-        <ThemeContext.Provider value={themeContextValue}>
-          <TokenDisplayProvider>
-            <AppRoutes />
-          </TokenDisplayProvider>
-        </ThemeContext.Provider>
+        <ThemeServerSync />
+        <DemoNotice />
+        <TokenDisplayProvider>
+          <AppRoutes />
+        </TokenDisplayProvider>
       </AntdApp>
     </ConfigProvider>
   );
@@ -131,5 +127,3 @@ const AppRoutes: React.FC = () => {
     </AuthGate>
   );
 };
-
-

@@ -1,6 +1,7 @@
 package quota
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -128,6 +129,44 @@ func TestParseCodexUsageCamelCaseAndClamping(t *testing.T) {
 	}
 }
 
+func TestParseCodexUsageRejectsNonFiniteNumbersAndHonoursLimitReached(t *testing.T) {
+	raw := []byte(`{
+		"plan_type": "pro",
+		"rate_limit": {
+			"allowed": true,
+			"limit_reached": false,
+			"primary_window": {
+				"used_percent": "NaN",
+				"limit_window_seconds": 18000
+			}
+		},
+		"code_review_rate_limit": {
+			"allowed": false,
+			"primary_window": {
+				"used_percent": 10,
+				"limit_window_seconds": 18000
+			}
+		}
+	}`)
+
+	_, windows, _, err := ParseCodexUsage(raw, time.Now().UnixMilli())
+	if err != nil {
+		t.Fatalf("ParseCodexUsage failed: %v", err)
+	}
+	if len(windows) != 2 {
+		t.Fatalf("len(windows) = %d, want 2", len(windows))
+	}
+	if windows[0].UsedPercent != nil {
+		t.Fatalf("non-finite used_percent = %v, want it omitted", windows[0].UsedPercent)
+	}
+	if windows[1].ID != "code_review_5h" {
+		t.Fatalf("code-review window id = %q, want code_review_5h", windows[1].ID)
+	}
+	if windows[1].UsedPercent == nil || *windows[1].UsedPercent != 100 {
+		t.Fatalf("limit-reached code-review used_percent = %v, want 100", windows[1].UsedPercent)
+	}
+}
+
 func TestParseCodexResetCreditsPayload(t *testing.T) {
 	raw := []byte(`{
 		"available_count": 3,
@@ -183,5 +222,68 @@ func TestParseCodexResetCreditsPayload(t *testing.T) {
 	}
 	if second := info.Credits[1]; second.ID != "credit-4" {
 		t.Errorf("second credit = %+v, want credit-4 (camelCase fallback)", second)
+	}
+}
+
+// float64(math.MaxInt64) rounds up to 2^63, one past the largest int64, so the
+// upper bound has to be inclusive: a value of exactly 2^63 used to pass the guard
+// and then convert to a negative int64.
+func TestToInt64RejectsTheRoundedMaxInt64Boundary(t *testing.T) {
+	const twoToTheSixtyThree = 9223372036854775808.0
+
+	if got, ok := toInt64(twoToTheSixtyThree); ok {
+		t.Fatalf("toInt64(2^63) = %d, want it rejected", got)
+	}
+
+	largest := math.Nextafter(twoToTheSixtyThree, 0)
+	got, ok := toInt64(largest)
+	if !ok {
+		t.Fatalf("toInt64(%v) was rejected", largest)
+	}
+	if got < 0 {
+		t.Fatalf("toInt64(%v) = %d, want a positive value", largest, got)
+	}
+
+	minimum, ok := toInt64(-twoToTheSixtyThree)
+	if !ok || minimum != math.MinInt64 {
+		t.Fatalf("toInt64(-2^63) = %d, %v; want %d, true", minimum, ok, int64(math.MinInt64))
+	}
+
+	for _, value := range []any{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		if got, ok := toInt64(value); ok {
+			t.Fatalf("toInt64(%v) = %d, want it rejected", value, got)
+		}
+	}
+}
+
+func TestParseCodexSubscription(t *testing.T) {
+	until, shouldRenew, ok := ParseCodexSubscription([]byte(`{
+		"plan_type": "plus",
+		"active_start": "2026-08-29T14:02:31Z",
+		"active_until": "2026-09-29T14:02:31Z",
+		"will_renew": true
+	}`))
+	if !ok {
+		t.Fatal("ParseCodexSubscription rejected a well-formed payload")
+	}
+	want := time.Date(2026, 9, 29, 14, 2, 31, 0, time.UTC).UnixMilli()
+	if until != want {
+		t.Errorf("until = %d, want %d", until, want)
+	}
+	if shouldRenew == nil || !*shouldRenew {
+		t.Errorf("shouldRenew = %v, want true", shouldRenew)
+	}
+
+	// A response without a usable window must be reported as absent so the
+	// caller keeps its previous source instead of overwriting it with zero.
+	for _, raw := range []string{
+		`{"active_until": null}`,
+		`{"active_until": ""}`,
+		`{}`,
+		`not json`,
+	} {
+		if _, _, ok := ParseCodexSubscription([]byte(raw)); ok {
+			t.Errorf("ParseCodexSubscription(%s) = ok, want rejected", raw)
+		}
 	}
 }

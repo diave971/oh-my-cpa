@@ -48,6 +48,9 @@ test('an ordinary component change selects the frontend gates and nothing else',
     'logic',
     'i18n',
     'antd-lint',
+    // A component's inline style is a motion declaration too: `transition: 'all 0.15s'` inside a
+    // `style` object is a duration the budget owns, and the checker reads both extensions.
+    'motion',
   ]);
 });
 
@@ -71,9 +74,9 @@ test('a Go module change selects the Go tests', () => {
 });
 
 test('a CSS change selects the CSS module check without the TypeScript gates', () => {
-  // A stylesheet can only break a class reference, and `check-css-modules` is the
-  // gate that catches exactly that.
-  assert.deepEqual(planChecks(['web/src/pages/UsageEventsPage.css']), ['css-modules']);
+  // A stylesheet can break a class reference and the motion budget, and those are the two gates that
+  // catch exactly that; neither needs the type checker.
+  assert.deepEqual(planChecks(['web/src/pages/UsageEventsPage.css']), ['css-modules', 'motion']);
 });
 
 test('the regenerated embedded bundle is a Go-relevant change', () => {
@@ -148,12 +151,26 @@ test('an unplaceable file runs the broad gates rather than nothing', () => {
   assert.ok(plan.includes('go'), `go must be selected, got ${plan.join(',')}`);
 });
 
+test('a placed file with no specific rule still runs the broad gates', () => {
+  for (const file of [
+    'web/vite.config.ts',
+    'migrations/900_example.sql',
+    'internal/config.yaml',
+    '.github/CODEOWNERS',
+  ]) {
+    const plan = planChecks([file]);
+    assert.ok(plan.includes('type-check'), `${file} must include type-check, got ${plan.join(',')}`);
+    assert.ok(plan.includes('logic'), `${file} must include logic, got ${plan.join(',')}`);
+    assert.ok(plan.includes('go'), `${file} must include go, got ${plan.join(',')}`);
+  }
+});
+
 test('no planned check for any representative path reaches the browser or a build', () => {
   const corpus = [
     'web/src/App.tsx',
     'web/src/pages/UsageEventsPage.tsx',
     'web/src/pages/UsageEventsPage.css',
-    'web/src/types/usageEventView.ts',
+    'web/src/types/usageEventQuery.ts',
     'web/src/i18n/index.tsx',
     'internal/api/handler.go',
     'internal/api/management_provider_writes.go',

@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -144,7 +145,16 @@ var urlTokenPattern = regexp.MustCompile(`(?i)\bhttps?://[^\s"'<>]+`)
 var bearerPattern = regexp.MustCompile(`(?i)\bBearer\s+[^\s,;"'<>]+`)
 var headerSecretPattern = regexp.MustCompile(`(?im)^([ \t]*(?:authorization|proxy-authorization|cookie|set-cookie)[ \t]*:[ \t]*)[^\r\n]*`)
 var keyValueSecretPattern = regexp.MustCompile(`(?i)(["']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|client[_-]?secret|password|passwd|secret|authorization|proxy[_-]?authorization|cookie|account|token)["']?[ \t]*[:=][ \t]*)(?:"[^"]*"|'[^']*'|[^\s,;}&]+)`)
-var apiKeyPrefixPattern = regexp.MustCompile(`\b(?:sk|pk|ghp|gho|glpat|xox[baprs]|pat)-[A-Za-z0-9_-]{8,}\b`)
+
+// apiKeyPrefixPattern matches the vendor prefixes that make a bare token recognizable without a
+// surrounding key or header - the case where a credential arrives inside an error message and
+// nothing else marks it as one.
+//
+// The separator alternates because the real prefixes do: OpenAI and Anthropic use `sk-`, while
+// GitHub's `ghp_`/`gho_`, GitLab's `glpat-` and Slack's `xoxb-` are not all hyphenated. Matching
+// only `-` left `ghp_...` - the shape a GitHub feed error would actually carry - unredacted, which
+// no test covered because this pattern had none.
+var apiKeyPrefixPattern = regexp.MustCompile(`\b(?:sk|pk|pat|glpat)-[A-Za-z0-9_-]{8,}\b|\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{8,}\b|\bgithub_pat_[A-Za-z0-9_]{8,}\b|\bxox[baprs]-[A-Za-z0-9-]{8,}\b`)
 
 // RedactText removes common credential-bearing forms from arbitrary text.
 func RedactText(value string, knownSecrets ...string) string {
@@ -329,7 +339,13 @@ func MaskIP(value string) *string {
 	if value == "" {
 		return nil
 	}
-	if host, _, err := net.SplitHostPort(value); err == nil {
+	if host, port, err := net.SplitHostPort(value); err == nil {
+		if port != "" {
+			number, errPort := strconv.Atoi(port)
+			if errPort != nil || number < 0 || number > 65535 {
+				return nil
+			}
+		}
 		value = host
 	}
 	value = strings.Trim(value, "[]")
@@ -365,6 +381,63 @@ func MaskForwardedFor(value string) *string {
 		}
 	}
 	return nil
+}
+
+// NormalizeClientIP preserves the diagnostic client address while removing the
+// transport port and canonicalizing equivalent IPv6 spellings. Unlike MaskIP,
+// this is not a privacy projection: it is used only for the protected request
+// detail view, never for list/search payloads or authorization decisions.
+func NormalizeClientIP(value string) *string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	if host, port, err := net.SplitHostPort(value); err == nil {
+		if port != "" {
+			number, errPort := strconv.Atoi(port)
+			if errPort != nil || number < 0 || number > 65535 {
+				return nil
+			}
+		}
+		value = host
+	}
+	value = strings.Trim(value, "[]")
+	if value == "" || strings.Contains(value, "/") {
+		return nil
+	}
+	parsed := net.ParseIP(value)
+	if parsed == nil {
+		return nil
+	}
+	normalized := parsed.String()
+	return &normalized
+}
+
+// NormalizeForwardedFor preserves every valid hop in a proxy chain, in the order
+// the upstream sent it. Invalid or empty hops are omitted rather than allowing a
+// malformed diagnostic header to become an unbounded stored string.
+func NormalizeForwardedFor(value string) *string {
+	const (
+		maxHops  = 32
+		maxRunes = 2048
+	)
+	hops := make([]string, 0, maxHops)
+	for _, part := range strings.Split(value, ",") {
+		if len(hops) >= maxHops {
+			break
+		}
+		if normalized := NormalizeClientIP(strings.TrimSpace(part)); normalized != nil {
+			hops = append(hops, *normalized)
+		}
+	}
+	if len(hops) == 0 {
+		return nil
+	}
+	normalized := boundedRunes(strings.Join(hops, ", "), maxRunes)
+	if normalized == "" {
+		return nil
+	}
+	return &normalized
 }
 
 // MinimizeUserAgent keeps a short diagnostic product label.

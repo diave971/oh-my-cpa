@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -41,32 +42,88 @@ type Handler struct {
 	usage usagePipeline
 	// pricing serves model prices and the models.dev sync; nil until SetPricing.
 	pricing PricingManager
+	// release observes both products' published versions; nil until SetRelease. Nil
+	// means the page reports "not checked yet" rather than failing.
+	release ReleaseManager
+	// maintenance runs the database-wide maintenance actions; nil until
+	// SetMaintenance, and nil in a deployment that does not offer them.
+	maintenance MaintenanceManager
+	// pluginLogos inlines the logos plugins publish, so the browser never fetches a
+	// plugin's own host; see management_plugin_logos.go.
+	pluginLogos *pluginLogoFetcher
 
-	configMu  sync.Mutex
-	startTime time.Time
-	limiter   *loginLimiter
+	configMu       sync.Mutex
+	startTime      time.Time
+	limiter        *loginLimiter
+	trustedProxies []*net.IPNet
 	// providerWrites serialises whole-list provider configuration writes; see
 	// management_provider_writes.go for why one global permit is required.
 	providerWrites providerWriteGate
+	// beforeProviderNamesSave is a test seam for holding one overlay write open
+	// while another provider request is issued. Production leaves it nil.
+	beforeProviderNamesSave func()
+	// providerKeyMasks caches the auth index to provider key mask mapping the
+	// request list needs; see usage_provider_key_masks.go.
+	providerKeyMasks *providerKeyMaskCache
 }
 
 func NewHandler(cfg config.Config, repo *repository.Repository, cipher *appcrypto.Cipher, logger *slog.Logger, authManager *auth.Manager) *Handler {
-	return &Handler{
-		cfg:            cfg,
-		repo:           repo,
-		cipher:         cipher,
-		discoverer:     discovery.NewDiscoverer(cipher),
-		logger:         logger,
-		auth:           authManager,
-		startTime:      time.Now(),
-		limiter:        newLoginLimiter(),
-		providerWrites: newProviderWriteGate(),
+	handler := &Handler{
+		cfg:              cfg,
+		repo:             repo,
+		cipher:           cipher,
+		discoverer:       discovery.NewDiscoverer(cipher),
+		logger:           logger,
+		auth:             authManager,
+		startTime:        time.Now(),
+		limiter:          newLoginLimiter(),
+		trustedProxies:   parseTrustedProxyNetworks(cfg.TrustedProxyCIDRs),
+		providerWrites:   newProviderWriteGate(),
+		providerKeyMasks: newProviderKeyMaskCache(),
+		pluginLogos:      newPluginLogoFetcher(),
 	}
+	if handler.logger == nil {
+		// A handler built without a logger - which several tests do - must still be able
+		// to log. Leaving it nil turns any log line on a request path into a panic served
+		// to the caller, which is a far worse outcome than a default logger.
+		handler.logger = slog.Default()
+	}
+	if cfg.IsDemoMode {
+		// Inlining a plugin's logo means fetching a URL the plugin declares. The
+		// public demo fetches nothing a plugin names, so the inliner is not installed
+		// at all and the console falls back to its own bundled mark.
+		handler.pluginLogos = nil
+	}
+	return handler
 }
 
 func (h *Handler) Router() http.Handler {
+	base := h.cfg.BasePath
+	router := h.routes()
+	// chi's nested wildcard route also matches the bare mount path. Handle the
+	// canonical slash before it reaches the mounted router.
+	mounted := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if base != "/" && request.URL.Path == base {
+			http.Redirect(writer, request, base+"/", http.StatusPermanentRedirect)
+			return
+		}
+		router.ServeHTTP(writer, request)
+	})
+	return securityHeaders(mounted)
+}
+
+// routes builds the routing table.
+//
+// It is separate from Router so the demo policy test can walk the table the server
+// actually serves instead of a copy of it: the classification has to be total over
+// the real routes, and a second list would prove nothing about the first.
+func (h *Handler) routes() chi.Router {
 	router := chi.NewRouter()
 	router.Use(securityHeaders)
+	// The demo boundary has to sit above the routing table, because it classifies the
+	// route rather than the handler: see demo_policy.go. Outside demo mode the guard
+	// is not installed at all.
+	router.Use(h.demoGuard)
 	base := h.cfg.BasePath
 	if base == "" {
 		base = "/"
@@ -91,6 +148,7 @@ func (h *Handler) Router() http.Handler {
 				v1.Get("/management/dashboard/tail", h.dashboardTail)
 				v1.Get("/management/dashboard/token-heatmap", h.dashboardTokenHeatmap)
 				v1.Get("/management/dashboard/models", h.dashboardModels)
+				v1.Get("/management/dashboard/providers", h.dashboardProviders)
 				v1.Get("/management/logs", h.managementLogs)
 				v1.Delete("/management/logs", h.clearManagementLogs)
 				v1.Get("/management/logs/status", h.managementLogsStatus)
@@ -111,10 +169,13 @@ func (h *Handler) Router() http.Handler {
 				v1.Get("/usage/events/{id}/request-log", h.downloadUsageEventRequestLog)
 				v1.Get("/usage/facets", h.listUsageFacets)
 				v1.Get("/management/auth-files", h.listManagementAuthFiles)
+				v1.Get("/management/auth-files/safe-fields", h.getManagementAuthFileSafeFields)
+				v1.Get("/management/auth-files/model-aliases", h.listManagementOAuthModelAliases)
 				v1.Get("/management/auth-files/models", h.listManagementAuthFileModels)
 				v1.Post("/management/auth-files", h.uploadManagementAuthFiles)
 				v1.Patch("/management/auth-files/status", h.patchManagementAuthFileStatus)
 				v1.Patch("/management/auth-files/fields", h.patchManagementAuthFileFields)
+				v1.Patch("/management/auth-files/model-aliases", h.patchManagementOAuthModelAliases)
 				v1.Delete("/management/auth-files", h.deleteManagementAuthFiles)
 				v1.Get("/management/auth-files/download", h.downloadManagementAuthFile)
 				v1.Get("/management/capabilities/{key}", h.managementCapabilityProbe)
@@ -150,6 +211,11 @@ func (h *Handler) Router() http.Handler {
 				v1.Get("/management/quota/{authIndex}", h.getCredentialQuotaDetail)
 				v1.Get("/management/system", h.getSystemInfo)
 				v1.Get("/management/system/diagnostics", h.getSystemDiagnostics)
+				v1.Get("/management/system/releases", h.getSystemReleases)
+				v1.Post("/management/system/check-updates", h.postSystemCheckUpdates)
+				v1.Get("/management/system/maintenance", h.getSystemMaintenance)
+				v1.Post("/management/system/maintenance/checkpoint", h.postSystemMaintenanceCheckpoint)
+				v1.Post("/management/system/maintenance/vacuum", h.postSystemMaintenanceVacuum)
 				v1.Get("/management/plugins", h.listPlugins)
 				v1.Patch("/management/plugins/{id}/status", h.setPluginStatus)
 				v1.Delete("/management/plugins/{id}", h.deletePlugin)
@@ -181,16 +247,7 @@ func (h *Handler) Router() http.Handler {
 		r.Head("/*", h.spa)
 		r.MethodNotAllowed(h.methodNotAllowed)
 	})
-	// chi's nested wildcard route also matches the bare mount path. Handle the
-	// canonical slash before it reaches the mounted router.
-	mounted := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if base != "/" && request.URL.Path == base {
-			http.Redirect(writer, request, base+"/", http.StatusPermanentRedirect)
-			return
-		}
-		router.ServeHTTP(writer, request)
-	})
-	return securityHeaders(mounted)
+	return router
 }
 
 type loginRequest struct {
@@ -204,7 +261,7 @@ func (h *Handler) login(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 
-	ip := resolveClientIP(request)
+	ip := resolveClientIP(request, h.trustedProxies)
 	if h.limiter != nil && h.limiter.isLocked(ip) {
 		writeError(writer, http.StatusTooManyRequests, "too many failed login attempts; please try again later")
 		return
@@ -219,6 +276,17 @@ func (h *Handler) login(writer http.ResponseWriter, request *http.Request) {
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&payload); err != nil || strings.TrimSpace(payload.Password) == "" {
 		writeError(writer, http.StatusBadRequest, "management key is required")
+		return
+	}
+	if h.cfg.IsDemoMode {
+		// A public demonstration has no secret to check: the same session is issued on
+		// first sight, so a visitor who lands on the sign-in card must not be able to
+		// get stuck behind a key they were never given.
+		if err := h.auth.Issue(writer); err != nil {
+			writeInternalError(writer, err)
+			return
+		}
+		writeJSON(writer, http.StatusOK, map[string]any{"authenticated": true, "demo": true})
 		return
 	}
 	if !h.auth.KeyMatches(payload.Password) {
@@ -243,6 +311,18 @@ func (h *Handler) login(writer http.ResponseWriter, request *http.Request) {
 func (h *Handler) session(writer http.ResponseWriter, request *http.Request) {
 	writer.Header().Set("Cache-Control", "no-store")
 	if h.auth == nil || !h.auth.Valid(request) {
+		if h.cfg.IsDemoMode && h.auth != nil {
+			// The demonstration is open to anyone who opens the link, so the session it
+			// needs is issued on first sight rather than behind a credential a visitor
+			// would have to be told. Nothing is granted by it: the routes that would
+			// touch a real gateway are refused by demo_policy.go, not by this cookie.
+			if err := h.auth.Issue(writer); err != nil {
+				writeInternalError(writer, err)
+				return
+			}
+			writeJSON(writer, http.StatusOK, map[string]any{"authenticated": true, "demo": true})
+			return
+		}
 		writeJSON(writer, http.StatusOK, map[string]any{"authenticated": false})
 		return
 	}
@@ -264,8 +344,27 @@ func (h *Handler) logout(writer http.ResponseWriter, request *http.Request) {
 func (h *Handler) requireAuthentication(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if h.auth == nil || !h.auth.Valid(request) {
-			writeError(writer, http.StatusUnauthorized, "authentication required")
-			return
+			if h.cfg.IsDemoMode && h.auth != nil {
+				// The demonstration hands a session to whoever asks, so an unauthenticated
+				// request is not refused: it is served, and given the cookie it was missing.
+				//
+				// This is not a relaxation of a boundary. Nothing is granted by the cookie
+				// that the auto-issued session did not already grant - demo_policy.go is what
+				// refuses the operations a demo must not perform - and refusing here would
+				// break the demonstration on the platform it is deployed to: a container
+				// scales to zero and runs as several instances behind one address, each with
+				// its own fixture key, so a cookie minted by one is invalid at the next. The
+				// first reads of a page overlap the session check that would have replaced
+				// it, and a 401 among them turns the console back into a sign-in card that
+				// nothing was wrong with.
+				if err := h.auth.Issue(writer); err != nil {
+					writeInternalError(writer, err)
+					return
+				}
+			} else {
+				writeError(writer, http.StatusUnauthorized, "authentication required")
+				return
+			}
 		}
 		if request.Method != http.MethodGet && request.Method != http.MethodHead && !sameOrigin(request) {
 			writeError(writer, http.StatusForbidden, "same-origin request required")
@@ -675,7 +774,7 @@ func (h *Handler) spa(writer http.ResponseWriter, request *http.Request) {
 		writeInternalError(writer, fmt.Errorf("read embedded index: %w", err))
 		return
 	}
-	index, err := injectRuntimeConfig(string(data), h.cfg.BasePath)
+	index, err := injectRuntimeConfig(string(data), h.cfg)
 	if err != nil {
 		writeInternalError(writer, err)
 		return
@@ -688,7 +787,8 @@ func (h *Handler) spa(writer http.ResponseWriter, request *http.Request) {
 	_, _ = writer.Write([]byte(index))
 }
 
-func injectRuntimeConfig(indexHTML, basePath string) (string, error) {
+func injectRuntimeConfig(indexHTML string, cfg config.Config) (string, error) {
+	basePath := cfg.BasePath
 	if basePath == "/" {
 		basePath = ""
 	}
@@ -696,11 +796,14 @@ func injectRuntimeConfig(indexHTML, basePath string) (string, error) {
 	mediaBase := joinURLPath(basePath, "/media")
 	// The template package escapes values before putting them into the HTML
 	// script. Paths are validated by NormalizeBasePath before reaching here.
-	payload := fmt.Sprintf(`window.__OMCPA_CONFIG__ = %s;`, mustJSON(map[string]string{
+	// `demo` is injected rather than probed so the console can mark itself in the
+	// first frame, without a request that would flash a non-demo layout first.
+	payload := fmt.Sprintf(`window.__OMCPA_CONFIG__ = %s;`, mustJSON(map[string]any{
 		"basePath":     basePath,
 		"apiBaseUrl":   apiBase,
 		"mediaBaseUrl": mediaBase,
 		"appName":      "Oh My CPA",
+		"demo":         cfg.IsDemoMode,
 	}))
 	script := "<script>" + payload + "</script>"
 	replacedConfig := false
@@ -785,6 +888,18 @@ func writeJSON(writer http.ResponseWriter, status int, value any) {
 
 func writeError(writer http.ResponseWriter, status int, message string) {
 	writeJSON(writer, status, map[string]string{"error": message})
+}
+
+const auditWriteFailedCode = "audit_write_failed"
+
+// writeAuditFailure gives credential reveals a stable refusal contract. The
+// operation is refused rather than retried automatically, but a caller can still
+// distinguish an unavailable audit store from a gateway or permission failure.
+func writeAuditFailure(writer http.ResponseWriter, message string) {
+	writeJSON(writer, http.StatusInternalServerError, map[string]string{
+		"error": message,
+		"code":  auditWriteFailedCode,
+	})
 }
 
 func writeErrorWithDetails(writer http.ResponseWriter, status int, message string, details []string) {

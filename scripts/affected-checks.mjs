@@ -25,6 +25,7 @@ export const CHECK_IDS = [
   'i18n',
   'antd-lint',
   'css-modules',
+  'motion',
   'go',
   'docs',
   'workflow',
@@ -62,6 +63,9 @@ export function planChecks(files) {
   if (hasWebCode) checks.add('i18n');
   if (has((file) => file.endsWith('.tsx'))) checks.add('antd-lint');
   if (has((file) => file.endsWith('.css'))) checks.add('css-modules');
+  // The motion budget is declared in stylesheets and in the inline styles of components, so either
+  // extension can break it; the checker reads both.
+  if (has((file) => file.endsWith('.css') || file.endsWith('.tsx'))) checks.add('motion');
   if (hasGo) checks.add('go');
   if (has((file) => file.endsWith('.md'))) checks.add('docs');
   if (has((file) => file.startsWith('.github/workflows/') || file === 'scripts/validate-workflow.mjs')) {
@@ -102,7 +106,7 @@ export function planChecks(files) {
     file.endsWith('.css') ||
     /^(?:.*\.go|go\.mod|go\.sum)$/.test(file) ||
     ['web/package.json', 'web/tsconfig.json', 'package.json', 'pnpm-lock.yaml'].includes(file);
-  if (has((file) => !isPlaced(file))) {
+  if (has((file) => !isPlaced(file)) || (files.length > 0 && checks.size === 0)) {
     checks.add('type-check');
     checks.add('logic');
     checks.add('go');

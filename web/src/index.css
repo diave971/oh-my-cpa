@@ -31,19 +31,29 @@
   --bg: #121214;
   --surface: #1c1c1f;
   --bg-surface: var(--surface);
+  /* The floating-layer fill and the selected-row fill are set at runtime from the resolved palette;
+     they are mirrored here so the first frame and the sign-in screen paint the same console the
+     palette resolves to. `scripts/test-theme-presets.ts` asserts this block equals the derived OMC
+     Dark palette token for token, which is what stops the two from drifting apart. */
+  --elevated: #222226;
+  --selected-inset: #2e2e37;
   --font-mono: "Sarasa Mono SC", "Sarasa UI SC", "Sarasa Term SC", "更纱黑体 SC", "Berkeley Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   --fg: #f4f4f6;
   --fg-2: #a1a1aa;
   --muted: #71717a;
   --meta: #52525b;
   --border: #2c2c30;
-  --border-soft: #222226;
+  --border-soft: #212124;
   /* Accent ladder, hue 201. The link step is the bright one because it sits on the dark
-     background (6.12:1); the two deeper steps are what white label text can sit on (4.85:1 and
-     7.09:1). Measured ratios are in docs/design.md §2. */
+     background (6.74:1); the two deeper steps are what white label text can sit on (4.69:1 resting,
+     6.93:1 pressed). Both are measured against the *same* label, which is why the ladder solves them
+     together rather than one at a time. Ratios are in docs/design.md §2. */
   --accent: #00a2fb;
-  --accent-hover: #0077b8;
-  --accent-active: #005d8f;
+  --accent-hover: #0579bd;
+  --accent-active: #025e94;
+  /* The label colour for a filled accent control, matching the presets' own `accentOn` token.
+     White in both fallback palettes; a preset whose accent fill is light carries a dark step. */
+  --accent-on: #ffffff;
   --success: #10b981;
   --warn: #f59e0b;
   --danger: #ef4444;
@@ -61,7 +71,7 @@
      traffic and the lightest measured shade cannot be confused, and the busy stop is the theme
      accent. Everything between them is mixed in OKLCH by the browser, from a square root of the
      day's volume - see web/src/theme/heatmapRamp.ts for why that curve and not a linear one. */
-  --heatmap-quiet: #222226;
+  --heatmap-quiet: #212124;
   --heatmap-busy: #00a2fb;
   /* The grid's floor, the space between cells, and the weekday gutter. The cell size itself
      is not a token: it is whatever divides the panel evenly. */
@@ -77,10 +87,10 @@
      card showing through instead of as a bright mesh drawn around every cell.
      The order is the meaning. An unrecorded day carries no information, so it is the closest to the
      card; a recorded-but-empty day is a measurement of zero, so it takes a step further; a measured
-     day is the only thing clearly louder than the card. Contrast against the card is 1.07, 1.19 and
+     day is the only thing clearly louder than the card. Contrast against the card is 1.06, 1.22 and
      6.12 respectively, so the two zero states stay quiet and never compete with the ramp. */
-  --heatmap-zero-unrecorded: #222226;
-  --heatmap-zero-recorded: #2a2a30;
+  --heatmap-zero-unrecorded: #212124;
+  --heatmap-zero-recorded: #2c2c30;
   /* The link step of the accent ladder. The tooltip sits on the card's surface rather than the page,
      where the bright accent reads 6.12:1 - clear of AA, so the ladder's own link step is used. */
   --heatmap-tip-link: #00a2fb;
@@ -95,22 +105,31 @@
   --series-6: #06b6d4;
   /* The trend's plot floor and the ring's unfilled track: a quiet step against the card, so an empty
      stretch reads as the axis rather than as a gap in the data. */
-  --series-track: #2a2a30;
+  --series-track: #2c2c30;
   --radius-sm: 4px;
   /* The inset step for a control that sits on an elevated panel. "One step
      down from the popover" is --bg in dark and --surface in light, so the two
      modes disagree and the components should not have to know. */
   --hover-inset: var(--bg);
-  /* Motion budget from docs/design.md: chrome only, no entrance choreography. */
-  --motion-fast: 100ms;
-  --motion-base: 150ms;
+  /* Motion budget from docs/design.md §7: chrome only, no entrance choreography. These are the
+     same two numbers Ant Design's own motion tokens carry in `themeConfig.ts`
+     (`motionDurationFast`, and `motionDurationMid`/`Slow`), and `test-theme-presets` pins the pair -
+     the stylesheet used to carry 100ms/150ms against the table's 50ms/100ms, so call sites written
+     as `var(--motion-fast, 50ms)` were quietly paying double the budget they named. */
+  --motion-fast: 50ms;
+  --motion-base: 100ms;
+  /* §7's `float`: a click already said "open", so a floating panel only fades. antd has no token for
+     it, which is why this one is the console's own. */
+  --motion-float: 60ms;
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
 }
 
-:root[data-theme='light'] {
+:root[data-theme-mode='light'] {
   color-scheme: light;
   --bg: #ffffff;
   --surface: #f6f6f8;
+  --elevated: #ffffff;
+  --selected-inset: #eaedef;
   --fg: #1c1c1e;
   --fg-2: #505055;
   --muted: #787880;
@@ -119,29 +138,30 @@
      reads 2.71:1 there, while this reads 6.57:1 as a link and 7.09:1 under white text. The dark
      theme's link step is therefore this theme's filled-control step. */
   --accent: #005d8f;
-  --accent-hover: #004770;
-  --accent-active: #00344f;
+  --accent-hover: #004a73;
+  --accent-active: #023b5d;
+  --accent-on: #ffffff;
   --border: #e5e5ea;
-  --border-soft: #ededf2;
-  --hover-inset: #ededf2;
+  --border-soft: #f1f1f4;
+  --hover-inset: #f2f2f2;
   --success: #059669;
   --warn: #b45309;
   --danger: #dc2626;
   /* The same two hues read as their darker steps on a light page; a saturated
      yellow cannot also be legible there, so the low end is ochre. */
   --cache-rate-yellow: #b45309;
-  --cache-rate-green: #047857;
+  --cache-rate-green: #059669;
   --cache-rate-tint: 20%;
   --cache-rate-edge: 34%;
   /* The same ramp read on a light page: the quiet stop is this theme's empty fill and the busy stop
      is the accent step that stays legible on it. */
-  --heatmap-quiet: #ececf0;
+  --heatmap-quiet: #f1f1f4;
   --heatmap-busy: #005d8f;
   /* On a light page the card sits at #f6f6f8 and the ramp runs the other way: both zero steps are a
      shade *darker* than it, which is GitHub's light-theme direction. Same order, same meaning -
-     unrecorded 1.09, empty 1.20, measured 6.57 against the card. */
-  --heatmap-zero-unrecorded: #ececf0;
-  --heatmap-zero-recorded: #e2e2e8;
+     unrecorded 1.04, empty 1.16, measured 6.57 against the card. */
+  --heatmap-zero-unrecorded: #f1f1f4;
+  --heatmap-zero-recorded: #e5e5ea;
   /* The link step of the accent ladder for this theme; the tooltip is on the card's surface rather
      than the page, and this is the step that clears 4.5:1 there. */
   --heatmap-tip-link: #005d8f;
@@ -170,7 +190,7 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
-::selection { background: var(--accent); color: #fff; }
+::selection { background: var(--accent); color: var(--accent-on); }
 button, input, textarea, select { font: inherit; }
 a { color: inherit; }
 
@@ -199,7 +219,7 @@ a { color: inherit; }
 .ant-dropdown,
 .ant-select-dropdown,
 .ant-picker-dropdown {
-  animation-duration: 60ms !important;
+  animation-duration: var(--motion-float) !important;
 }
 .ant-card, .ant-table-wrapper .ant-table, .ant-drawer-content, .ant-modal-content {
   background: var(--surface);
@@ -315,7 +335,13 @@ a { color: inherit; }
 .app-sider-foot-row { display: flex; justify-content: space-between; gap: 8px; }
 /* Collapsed there is no room for a wordmark, so the row centres the O instead. */
 .app-brand-collapsed { justify-content: center; padding: 0; border-bottom: 1px solid var(--border); }
-.app-header { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 16px; height: 56px; padding: 0 24px 0 12px; background: var(--bg) !important; border-bottom: 1px solid var(--border); }
+/* With `viewport-fit=cover` the shell owns the whole screen, which in landscape puts the
+   notch over its left edge and the home indicator under its right. The insets are applied
+   to the chrome that touches an edge rather than to `.app-content`, because a scroll
+   container given a bottom inset scrolls its last line out from under itself. Each inset
+   is a floor beneath the design system's own padding, never a replacement for it. */
+.app-header { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 16px; height: 56px; padding: 0 max(24px, env(safe-area-inset-right)) 0 max(12px, env(safe-area-inset-left)); background: var(--bg) !important; border-bottom: 1px solid var(--border); }
+.app-sider { padding-left: env(safe-area-inset-left); }
 .app-header-left, .app-header-actions, .app-breadcrumb { display: flex; align-items: center; }
 .app-header-left { min-width: 0; gap: 8px; }
 .app-header-actions { gap: 6px; }
@@ -324,14 +350,29 @@ a { color: inherit; }
 .app-breadcrumb .ant-breadcrumb-link { color: var(--muted); }
 .app-breadcrumb li:last-child .ant-breadcrumb-link { color: var(--fg); }
 .app-breadcrumb-current { color: var(--fg); font-weight: 500; }
-.base-path-tag { margin: 0; border-color: var(--border); color: var(--muted); background: transparent; font-size: 10px; }
-.connection-pill { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; font-size: 10px; letter-spacing: .04em; white-space: nowrap; }
-.connection-pill.is-online { color: var(--success); border-color: rgba(48, 209, 88, .45); }
-.connection-pill.is-degraded { color: var(--warn); border-color: rgba(255, 159, 10, .45); }
-.connection-pill.is-offline { color: var(--danger); border-color: rgba(255, 59, 48, .45); }
 .header-logout { color: var(--muted) !important; }
+/* The demonstration's marker. It borrows the credential card's own badge language -
+   accent text on the surface with a border edge - rather than introducing a hue, so it
+   reads as one more label in the shell instead of as an alert. */
+.demo-chip { display: inline-flex; align-items: center; height: 20px; padding: 0 6px; border: 1px solid var(--border); border-radius: 2px; background: var(--surface); color: var(--accent); font-size: 10px; font-weight: 600; letter-spacing: 0.06em; }
 .app-content { flex: 1 1 0; min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; background: var(--bg); }
 .app-footer { display: none; }
+
+/* ── mobile navigation sheet ────────────────────────────────────────────────
+   The sheet is the side rail at a phone width, so it carries the rail's three parts -
+   brand, nav, foot - and its rules are the rail's, not a second set. All this adds is
+   what a full-height overlay needs and a rail does not: the notch inset, and a scroll
+   region that cannot drag the sheet itself. */
+.mobile-nav-drawer .ant-drawer-body {
+  padding: 0;
+  padding-left: env(safe-area-inset-left);
+  /* The mask is transparent, so the sheet's own edge is what separates it from the page. */
+  border-right: 1px solid var(--border);
+}
+/* The nav is the only region that scrolls, so the brand and the foot stay put and the sheet
+   never becomes a second scroller the reader has to find. */
+.mobile-nav-drawer .app-sider-scroll { overscroll-behavior: contain; }
+.mobile-nav-drawer .app-brand { cursor: default; }
 .auth-shell {
   height: 100vh;
   height: 100dvh;
@@ -345,11 +386,10 @@ a { color: inherit; }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 24px 0 16px;
+  padding: 0 max(24px, env(safe-area-inset-right)) 0 max(16px, env(safe-area-inset-left));
   border-bottom: 1px solid var(--border);
   background: var(--bg);
-}
-.auth-brand {
+}.auth-brand {
   min-width: 0;
   display: flex;
   align-items: center;
@@ -450,6 +490,8 @@ a { color: inherit; }
 .dashboard-kpi > span { color: var(--muted); font-size: 13px; letter-spacing: .04em; }
 .dashboard-kpi strong { font-size: 28px; line-height: 1; }
 .dashboard-kpi small { margin-top: auto; color: var(--meta); font-size: 12px; }
+/* The meter's fill colour is supplied by the row from the success-rate token its rate falls in,
+   which is why the accent here is only the fallback for a meter drawn without a rate. */
 .dashboard-meter { height: 4px; overflow: hidden; background: var(--border); border-radius: 2px; }
 .dashboard-meter span { display: block; height: 100%; background: var(--accent); }
 .dashboard-section { margin-bottom: 32px; }
@@ -467,6 +509,160 @@ a { color: inherit; }
 .status-pip { width: 7px; height: 7px; border-radius: 2px; background: var(--success); }
 .provider-credentials, .provider-rate { color: var(--muted); font-size: 13px; }
 .provider-total { font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums; }
+
+/* ── Dashboard Providers Section ─────────────────────────────────────────── */
+.dashboard-providers-section { margin-bottom: 32px; }
+
+.provider-list-panel {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+  margin-bottom: 0;
+}
+.provider-list-items {
+  display: flex;
+  flex-direction: column;
+}
+.provider-row-enhanced {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.8fr) minmax(90px, .9fr) 80px 75px minmax(110px, 1.2fr);
+  align-items: center;
+  gap: 14px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--border-soft);
+  transition: background-color var(--motion-fast) var(--ease-standard);
+}
+.provider-row-enhanced.is-clickable {
+  cursor: pointer;
+  user-select: none;
+}
+.provider-row-enhanced:last-child {
+  border-bottom: none;
+}
+.provider-row-enhanced:hover {
+  background-color: var(--hover-inset);
+}
+
+.provider-main-col {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.provider-brand-badge {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border-radius: var(--radius-sm, 4px);
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+.provider-brand-badge .status-pip {
+  position: absolute;
+  bottom: -2px;
+  right: -2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1px solid var(--surface);
+}
+.status-pip.is-active { background: var(--success); }
+.status-pip.is-disabled { background: var(--danger); }
+
+.provider-title-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.provider-title {
+  color: var(--fg);
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.provider-badge {
+  margin: 0 !important;
+  font-size: 10px !important;
+  line-height: 16px !important;
+  padding: 0 5px !important;
+  border-radius: 2px !important;
+}
+.provider-badge.is-oauth {
+  color: var(--accent) !important;
+  border-color: var(--border) !important;
+  background: var(--surface) !important;
+}
+.provider-badge.is-ai {
+  color: var(--fg-2) !important;
+  border-color: var(--border) !important;
+  background: transparent !important;
+}
+.provider-badge.is-disabled {
+  color: var(--danger) !important;
+  border-color: var(--border) !important;
+  background: var(--surface) !important;
+}
+
+.provider-jump-arrow {
+  color: var(--meta);
+  font-size: 11px;
+  opacity: 0;
+  transform: translateX(-3px);
+  transition: opacity var(--motion-fast) var(--ease-standard), transform var(--motion-fast) var(--ease-standard);
+}
+.provider-row-enhanced:hover .provider-jump-arrow {
+  opacity: 0.8;
+  transform: translateX(0);
+}
+
+.provider-creds-col {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.provider-total-col {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+/* The rate's own colour is set inline from the row's band, which is why this rule carries only the
+   neutral fallback: the number is the one mark that stays readable at a measured 0%, where the
+   meter beneath it has no width to paint. */
+.provider-rate-col {
+  font-size: 12.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.provider-visual-col {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+}
+
+@media (max-width: 768px) {
+  .provider-row-enhanced {
+    grid-template-columns: minmax(130px, 1fr) auto auto;
+    gap: 10px 12px;
+  }
+  .provider-creds-col {
+    grid-column: 1;
+  }
+  .provider-total-col, .provider-rate-col {
+    text-align: right;
+  }
+  .provider-visual-col {
+    grid-column: 1 / -1;
+  }
+}
 .dashboard-lower { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .dashboard-card { min-height: 250px; padding: 20px; }
 .health-meter { display: flex; height: 8px; gap: 2px; margin: 24px 0 14px; background: var(--border); }
@@ -478,6 +674,9 @@ a { color: inherit; }
 .type-list span { border: 1px solid var(--border); padding: 4px 7px; color: var(--muted); font-size: 12px; }
 .type-list b { color: var(--fg); font-weight: 500; }
 .empty-copy { color: var(--muted); font-size: 13px; }
+/* The phone list's first-load indicator, in the space the rows will occupy. Centred because it
+   stands in for a block of content rather than sitting beside a label. */
+.phone-list-loading { display: flex; justify-content: center; padding: 40px 0; }
 .runtime-list { margin: 8px 0 0; }
 .runtime-list div { display: flex; justify-content: space-between; gap: 16px; padding: 9px 0; border-bottom: 1px solid var(--border-soft); }
 .runtime-list dt { color: var(--muted); font-size: 13px; }
@@ -489,7 +688,6 @@ a { color: inherit; }
 
 @media (max-width: 900px) {
   .terminal-page { padding: 24px 16px 40px; }
-  .base-path-tag { display: none; }
   .app-footer { padding-inline: 16px; flex-direction: column; gap: 4px; }
   .dashboard-hero { align-items: flex-start; flex-direction: column; padding: 20px; }
   .dashboard-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -523,8 +721,10 @@ a { color: inherit; }
 .auth-files-empty { padding: 64px 24px; }
 
 @media (max-width: 900px) {
-  .app-breadcrumb a, .app-breadcrumb span { display: none; }
-  .connection-pill span { display: none; }
+  /* Both breadcrumb rows are hidden rather than the whole list: the current page's own name
+     is the one piece of orientation a phone can still use, and it is the *last* item. The
+     group is what the sheet's Highlight already carries when the reader went through it. */
+  .app-breadcrumb li:not(:last-child) { display: none; }
   .dashboard-kpis { grid-template-columns: 1fr; }
   .hero-number { font-size: 34px; }
   .capability-state { padding: 20px; }
@@ -683,7 +883,14 @@ a { color: inherit; }
   margin-bottom: 32px;
 }
 .model-trend-card { grid-column: span 2; }
-.model-usage-card { grid-column: span 2; }
+.model-usage-card {
+  grid-column: span 2;
+  /* Both model cards share one grid row, so the taller trend card stretches the usage card even
+     when its own row is shorter. A flex column lets the body claim that spare height instead of
+     leaving the row at the top of the card with an empty strip beneath it. */
+  display: flex;
+  flex-direction: column;
+}
 
 /* The trend's key. It wraps rather than scrolls: a legend that scrolls hides the very series the
    reader is looking for, and six entries in a two-column card is at most two rows. */
@@ -710,7 +917,16 @@ a { color: inherit; }
    container, and without it a long model name in the legend would push the card wider than its
    track instead of truncating. */
 .model-trend { position: relative; min-width: 0; margin-top: 4px; }
-.model-usage-card .ant-card-body { container-type: inline-size; container-name: modelusage; }
+.model-usage-card .ant-card-body {
+  flex: 1 1 auto;
+  /* Centre the row in the height the card actually has below its header. Grid centring keeps the
+     row stretched to the body's full width, unlike flex centring, which would shrink it to its
+     content width and let the list collapse. */
+  display: grid;
+  align-content: center;
+  container-type: inline-size;
+  container-name: modelusage;
+}
 
 .model-usage-body { display: flex; align-items: center; gap: 24px; min-width: 0; }
 /* The ring yields width to the list down to a floor: the list's numeric columns cannot be abbreviated,
@@ -865,6 +1081,10 @@ a { color: inherit; }
   border-radius: 2px !important;
   background: var(--surface) !important;
   color: var(--fg) !important;
+  /* The surface is ours and is opaque by construction, so the popper is too. The library's dark theme
+     fades its own tooltip to 0.95, which would let the marks under it show through 5% of the panel -
+     and would make the two themes disagree about a surface neither of them owns. */
+  opacity: 1 !important;
   box-shadow: none !important;
   padding: 6px 8px !important;
 }
@@ -1038,7 +1258,7 @@ a { color: inherit; }
 }
 .heatmap-cell.is-interactive:hover .heatmap-cell-mark {
   box-shadow: inset 0 0 0 1px var(--fg-2);
-  transform: scale(1.35);
+  transform: scale(1.18);
   z-index: 1;
 }
 /* The cell needs a positioning context for the mark, and the mark has to be able to sit above its
@@ -1047,7 +1267,7 @@ a { color: inherit; }
 /* The colour lives on the mark so the cell's own background stays the layout-neutral empty fill;
    the state and level classes above set it on the cell, and this carries it onto the square. */
 .heatmap-cell > .heatmap-cell-mark { background: inherit; }
-.heatmap-cell:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent); }
+.heatmap-cell:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; box-shadow: none; }
 /* The cell whose tooltip is open keeps the ring, so the tooltip is visibly attached to it while
    the pointer moves off to the link inside. */
 .heatmap-cell.ant-tooltip-open { box-shadow: inset 0 0 0 1px var(--fg-2); }
@@ -1164,7 +1384,11 @@ a { color: inherit; }
    layout, and never covers more area than it has to: the terminal look should
    feel immediate and hand-following, not decorated. */
 .route-transition {
-  animation: route-enter var(--motion-fast) var(--ease-standard) both;
+  /* The `base` token, not `fast`. §7's table states that a route change "fades in over 100ms with a
+     3px rise", and the two tokens are only interchangeable while they happen to hold the same
+     number - which is how reading this as `fast` stayed invisible until the fast token was
+     corrected. */
+  animation: route-enter var(--motion-base) var(--ease-standard) both;
 }
 @keyframes route-enter {
   from { opacity: 0; transform: translateY(3px); }
@@ -1194,6 +1418,20 @@ a { color: inherit; }
 }
 .tile-skeleton.ant-skeleton { width: 100%; }
 @media (prefers-reduced-motion: reduce) {
+  /* antd animates a floating panel in with a zoom (`antZoomBigIn`) and does so under reduced motion
+     as well - measured, not assumed. Killing the animation alone is not enough: rc-motion sets the
+     enter state inline and waits for the animation to remove it, so `animation: none` left the panel
+     at scale 0 and opacity 0, i.e. never visible at all (also measured). The settled state is
+     therefore pinned alongside it - which is exactly the state the animation would have reached, so
+     no positioning is changed - and the panel appears in the frame the click happened. */
+  .ant-popover,
+  .ant-dropdown,
+  .ant-select-dropdown,
+  .ant-picker-dropdown {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
   .route-transition { animation: none; }
   /* Keep the in-flight signal, drop the movement. */
   .data-progress::after { animation: none; opacity: 0.6; }
@@ -1237,7 +1475,12 @@ a { color: inherit; }
 .logs-tail { position: relative; }
 .logs-alert { margin-bottom: 10px; }
 .log-list {
+  /* `dvh` rather than `vh`: the logs tail is sized against a fixed chrome budget, and on a
+     phone the URL bar changes what `100vh` means continuously - the list grew and shrank
+     under the reader as they scrolled. The `vh` line stays first as the fallback for a
+     browser without dynamic viewport units. */
   height: calc(100vh - 330px);
+  height: calc(100dvh - 330px);
   min-height: 300px;
   overflow: auto;
   overscroll-behavior: contain;
@@ -1292,7 +1535,7 @@ a { color: inherit; }
 @media (max-width: 900px) {
   .logs-search { width: 148px; }
   .logs-counts { margin-left: 0; width: 100%; }
-  .log-list { height: calc(100vh - 380px); }
+  .log-list { height: calc(100vh - 380px); height: calc(100dvh - 380px); }
 }
 
 /* ── config page ─────────────────────────────────────────────────────────── */
@@ -1479,6 +1722,23 @@ a { color: inherit; }
   padding: 20px;
 }
 
+/* A group whose field is edited on its own page: the panel states how much is
+   configured and leads to the surface that owns it, rather than carrying a second
+   editor that could disagree with the first. */
+.settings-managed-elsewhere {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.settings-managed-count {
+  color: var(--fg);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Variant 1: Form Grid */
 .settings-form-grid {
   display: grid;
@@ -1601,7 +1861,9 @@ a { color: inherit; }
   grid-template-rows: 0fr;
   opacity: 0;
   visibility: hidden;
-  transition: grid-template-rows 120ms var(--ease-standard), opacity 120ms var(--ease-standard), visibility 0s 120ms;
+  transition: grid-template-rows var(--motion-base) var(--ease-standard),
+              opacity var(--motion-base) var(--ease-standard),
+              visibility 0s var(--motion-base);
 }
 
 .settings-tls-body.is-open {
@@ -1646,7 +1908,6 @@ a { color: inherit; }
 .settings-field-control .ant-input-affix-wrapper > input.ant-input {
   height: auto !important;
   line-height: 1.5 !important;
-  font-size: 14px !important;
   padding: 0 !important;
   margin: 0 !important;
 }
@@ -1690,7 +1951,6 @@ a { color: inherit; }
 .settings-number-control .ant-input-number-input {
   height: 38px !important;
   line-height: 38px !important;
-  font-size: 14px !important;
   text-align: left !important;
   padding-inline-start: 12px !important;
   padding-inline-end: 34px !important;
@@ -1736,6 +1996,33 @@ a { color: inherit; }
   background: transparent;
 }
 
+.keys-key-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.keys-key-editor-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.keys-key-editor-hint {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.keys-key-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .config-api-keys-table .ant-table-tbody > tr > td {
   background: transparent !important;
   border-bottom: 1px solid var(--border-soft);
@@ -1746,30 +2033,13 @@ a { color: inherit; }
   border-bottom: none;
 }
 
-.config-api-keys-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-}
-
-.config-add-key-btn {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  color: var(--fg);
-  font-weight: 500;
-  height: 32px;
-}
-
-.config-add-key-btn:hover {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff !important;
-}
-
+/* A fixed width rather than a maximum: this box is what stops the reveal toggle
+   from resizing the key column, so its contribution to the table's layout must
+   not depend on how long the value inside it happens to be. A key longer than the
+   box scrolls inside it. */
 .config-key-box {
-  width: 100%;
-  max-width: 440px;
+  width: 380px;
+  max-width: 100%;
   height: 32px;
   display: inline-flex;
   align-items: center;
@@ -1789,6 +2059,28 @@ a { color: inherit; }
   color: var(--fg);
   letter-spacing: 0.5px;
   user-select: all;
+}
+
+/* The mask and the secret are the same shape and length, so the ink is what says
+   which one is on screen: masked keys carry the metadata colour the design system
+   names for them, and a revealed secret takes the console's full-contrast ink. */
+.config-key-text.is-masked {
+  color: var(--meta);
+}
+
+.config-key-text.is-revealed {
+  color: var(--fg);
+}
+
+/* The row's action cluster: the two actions that touch the secret stay inline as
+   32x32 squares, everything else lives behind the overflow trigger. */
+.keys-row-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  /* 8px, so the touch rules' 4px insets on these 32px controls meet instead of overlapping by
+     2px. Four buttons at 32px plus three 8px gaps is 152px, which fits every phone row. */
+  gap: 8px;
 }
 
 /* 32x32px square key action buttons */
@@ -1811,34 +2103,6 @@ a { color: inherit; }
   color: var(--fg) !important;
   border-color: var(--muted) !important;
   background: var(--bg) !important;
-}
-
-.config-key-action.is-danger:hover {
-  color: var(--danger) !important;
-  border-color: var(--danger) !important;
-  background: rgba(255, 59, 48, 0.1) !important;
-}
-
-/* A key the console has no usage identity for cannot be filtered to, so the
-   action is disabled rather than hidden: the missing identity is worth seeing. */
-.config-key-action:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.config-key-action:disabled:hover {
-  color: var(--muted) !important;
-  border-color: var(--border) !important;
-  background: var(--surface) !important;
-}
-
-/* States what the per-key counts measure. They describe this console's stored
-   records in one window, not the key's whole life, and saying so prevents
-   "12 requests" from reading as a lifetime total. */
-.config-keys-scope-note {
-  margin: 10px 0 0;
-  font-size: 11px;
-  line-height: 1.5;
 }
 
 @media (max-width: 1719px) {
@@ -1891,14 +2155,25 @@ a { color: inherit; }
   }
 }
 
-@media (max-width: 680px) {
+/* The configuration workbench on a phone: its toolbar stacks and its paired host/port fields
+   become one column. At the console's phone breakpoint, not a number of its own. */
+@media (max-width: 640px) {
   .config-toolbar {
     flex-direction: column;
     align-items: stretch;
     gap: 12px;
   }
+  /* The title and the status pills wrap rather than share one squeezed line, and the title does
+     not shrink below its own text. It was shrinking to its min-content width, which for a CJK title
+     is one character - the measured defect was "配置面板" printed as four stacked glyphs beside the
+     mode picker, because a flex item may shrink below its content and a title has no break
+     opportunity to offer in exchange. */
   .config-toolbar-left {
-    justify-content: space-between;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+  .config-toolbar-left .terminal-title {
+    flex: 0 0 auto;
   }
   .config-toolbar-actions {
     justify-content: space-between;
@@ -1976,7 +2251,11 @@ a { color: inherit; }
 
 .config-monaco-shell {
   width: 100%;
+  /* `dvh` for the same reason as the logs tail: the toolbar above this editor is sticky, so a
+     viewport unit that changes with the on-screen keyboard resizes the editor underneath the
+     caret while it is being typed into. */
   height: clamp(520px, calc(100vh - 280px), 800px);
+  height: clamp(520px, calc(100dvh - 280px), 800px);
   position: relative;
 }
 
@@ -2082,7 +2361,7 @@ a { color: inherit; }
 .config-dirty-btn-save {
   background: var(--accent) !important;
   border-color: var(--accent) !important;
-  color: #fff !important;
+  color: var(--accent-on) !important;
   font-weight: 500;
 }
 
@@ -2339,7 +2618,9 @@ a { color: inherit; }
   align-items: center;
 }
 
-@media (max-width: 680px) {
+/* The configuration workbench on a phone: the floating save bar reaches both edges, and the
+   payload rows wrap so their controls keep their width. At the console's phone breakpoint. */
+@media (max-width: 640px) {
   .config-dirty-bar-portal {
     inset-inline-start: 0;
     bottom: max(12px, env(safe-area-inset-bottom));
@@ -2373,12 +2654,238 @@ a { color: inherit; }
    section lists over card wrappers for settings. All this adds is the spacing
    between the page's two groups. */
 .omc-settings-group { margin-bottom: 20px; }
+.theme-preset-grid {
+  display: grid;
+  /* Four columns: three registered palettes for the mode plus the operator's own. `minmax(0, 1fr)`
+     rather than a pixel floor - the cards carry their own `min-width: 0`, so the grid shrinks with
+     the card instead of overflowing it, which is the failure this row's control column is measured
+     for. */
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  /* A definite width, not `min(100%, 880px)`: the control column this sits in is sized `auto` so a
+     segmented picker stays inside its box, and a percentage against an auto-width parent is
+     circular - the grid would shrink to its content instead of dividing 880px into four cards.
+     `max-width: 100%` is what clamps it once the row stacks and the column becomes 100%. */
+  width: 880px;
+  max-width: 100%;
+}
+
+.theme-preset-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--fg);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--motion-fast) var(--ease-standard), background var(--motion-fast) var(--ease-standard);
+}
+
+.theme-preset-card:hover {
+  border-color: var(--muted);
+  background: var(--hover-inset);
+}
+
+.theme-preset-card.is-active {
+  border-color: var(--accent);
+  background: var(--selected-inset);
+}
+
+.theme-preset-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* One preset's palette as four colour bands, drawn wherever a preset has to be
+   recognisable without being applied (settings cards, header theme menu). */
+.theme-swatch {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr 0.7fr 0.7fr;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+}
+
+.theme-swatch > span {
+  display: block;
+  min-width: 0;
+}
+
+.theme-preset-preview {
+  width: 100%;
+  height: 34px;
+}
+
+.theme-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.theme-menu-swatch {
+  width: 44px;
+  height: 14px;
+  flex: none;
+}
+
+/* A flag is drawn at a fixed size so a language switch cannot resize the control it
+   sits in. The hairline border is the same one the swatches wear: several flags carry
+   a white field, which would otherwise dissolve into a light theme's surface. */
+.language-flag {
+  display: inline-block;
+  width: 18px;
+  height: 12px;
+  flex: none;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  vertical-align: -1px;
+}
+
+.language-flag > svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.language-menu-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Both language codes occupy the same slot, so the trigger keeps one width in every
+   reading language. */
+.language-trigger-code {
+  display: inline-block;
+  min-width: 2ch;
+  text-align: center;
+}
+
+.theme-preset-name {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.theme-preset-desc {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+/* The custom palette's card before anything has been authored: an empty slot that says "make one"
+   rather than a card showing a palette that does not exist yet. The dashed border is the one dashed
+   rule in the console and it is doing the one job dashes are for - marking a placeholder. */
+.theme-preset-card.is-custom.is-empty {
+  border-style: dashed;
+}
+
+.theme-preset-blank {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-style: dashed;
+  color: var(--muted);
+}
+
+/* The custom palette editor, directly beneath the chooser it belongs to. It is a sibling block
+   rather than part of the row's control column: nine token rows need the width of the card, and the
+   row's column is sized for a segmented picker. */
+.palette-editor {
+  margin: 0 20px 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.palette-editor-head {
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding-bottom: 12px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.palette-editor-field {
+  display: flex;
+  min-width: 0;
+  flex: 0 1 auto;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.palette-editor-field-label {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.palette-editor-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* One row per authored token: what it paints, its colour, and what it measures against the page.
+   The ratio column is fixed-width so the numbers line up down the list - a column of ratios that
+   shifts sideways row by row cannot be compared by eye, which is the only thing it is for. */
+.palette-token-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 132px 84px;
+  align-items: center;
+  gap: 12px;
+  padding: 5px 0;
+}
+
+.palette-token-name {
+  color: var(--fg-2);
+  font-size: 12.5px;
+}
+
+.palette-token-ratio {
+  font-size: 12px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The marker carries the verdict, not the number: a ratio of 3.1:1 is correct for a hint and short
+   for body text, so the colour is what says which of those the reader is looking at. */
+.palette-token-ratio.is-ok { color: var(--success); }
+.palette-token-ratio.is-low { color: var(--warn); }
+.palette-token-ratio.is-layer { color: var(--muted); }
+
+/* The note that the console is showing a mode other than the one selected. `--warn` because this is
+   a state the operator did not choose and has to be able to explain; a quiet grey line would read as
+   ordinary help text and invite the question "why did the whole console change?". */
+.palette-preview-note {
+  margin: 0;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--bg);
+  color: var(--warn);
+  font-size: 12px;
+}
 /* The picker becomes a vertical list once the row stacks (see the page), and antd's `block` variant
    only sets `display: flex` - it does not stretch the root. Left as-is the list shrank to its widest
    label and sat in a narrow column beside empty space, so it is given the row's whole width here:
    the options are the row's content at this width, not a control beside a description. */
 @media (max-width: 900px) {
   .omc-settings-group .settings-toggle-control .ant-segmented { width: 100%; }
+  .theme-preset-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* The editor's three columns become a stack: a 132px colour control beside a fixed ratio column
+     cannot also hold a token name on a phone, and the ratio belongs under the colour it measures. */
+  .palette-token-row { grid-template-columns: minmax(0, 1fr) 132px; }
+  .palette-token-ratio { grid-column: 1 / -1; text-align: left; }
+  .palette-editor-actions { margin-left: 0; }
 }
 /* The config panel's rows hand every control a fixed 380px column, which suits its own text inputs
    and switches. These are segmented pickers three or four items wide and measure 456px, so that
@@ -2391,3 +2898,126 @@ a { color: inherit; }
 @media (min-width: 901px) {
   .omc-settings-group .settings-toggle-control { width: auto; }
 }
+/* ── touch and small viewports ────────────────────────────────────────────────
+   The console was built for a pointer, and two device facts were never expressed in
+   the stylesheet: a coarse pointer has no hover, and a finger is not a 1px cursor.
+   Both are stated here rather than per component, so a new control inherits them.
+
+   The breakpoints are deliberately two, and they mean different things:
+     900px - the shell changes shape (rail becomes a sheet, columns stack)
+     640px - the device is a phone (list rows replace tables, controls grow)
+   See docs/design.md §8. */
+
+/* A finger cannot produce a hover, so an affordance revealed only by one is an
+   affordance that does not exist. The dashboard's row arrows mark a row as
+   interactive and are therefore always drawn when no pointer can reach them. */
+@media (hover: none) {
+  .provider-jump-arrow { opacity: .5; transform: none; }
+}
+
+@media (pointer: coarse) {
+  /* `manipulation` removes the double-tap-to-zoom delay from controls, which is where
+     the delay is felt as lag. It is deliberately not applied to the page: double-tap
+     zoom is how a reader enlarges a dense table, and taking it away would be an
+     accessibility regression dressed as a latency win. */
+  button, a, label, summary, .ant-switch, .ant-segmented-item, .ant-tabs-tab, .ant-select-selector {
+    touch-action: manipulation;
+  }
+
+  /* iOS Safari zooms the whole page when a focused field is under 16px, and the design
+     system's base size is 14px, so every text control in the console triggered it. The
+     zoom is the browser's fix for an unreadable field - the field is what should change,
+     not the page's scale. This is also the rule that covers Monaco's hidden textarea,
+     which is an `input`-like element the editor library owns.
+
+     `!important` is deliberate here and is not a shortcut. antd injects its component styles
+     into the document at runtime, after this stylesheet, so an equal-specificity rule from
+     here loses on source order; and the console's own field wrappers
+     (`.settings-field-control`, `.config-number-control`) raise specificity above it again.
+     Enumerating those wrappers would mean this floor silently stops applying the next time a
+     field gains one, which is the defect it exists to prevent. It is a device-level floor,
+     so it is meant to outrank the component layer. */
+  .ant-input,
+  .ant-input-affix-wrapper > input.ant-input,
+  .ant-input-textarea textarea,
+  .ant-input-number-input,
+  .ant-select-input,
+  .ant-picker-input > input,
+  textarea,
+  input {
+    font-size: 16px !important;
+  }
+  /* The *displayed* text of a Select is deliberately left as the token sizes it: the browser
+     reads the size of the element it focuses, and that is the search input above, not this
+     label. Enlarging the label would trade the console's density for zoom that is already
+     prevented. */
+
+  /* The switch is the one control whose drawn size cannot be rescued by a hit area: 28x16
+     is below the floor in both dimensions, and antd's small variant is used on five
+     surfaces. It grows here instead, because on a touch device the thumb is the pointer. */
+  .ant-switch-small { min-width: 44px; height: 22px; line-height: 22px; }
+  .ant-switch-small .ant-switch-handle { width: 18px; height: 18px; inset-inline-start: 2px; }
+  .ant-switch-small.ant-switch-checked .ant-switch-handle { inset-inline-start: calc(100% - 20px); }
+
+  /* Tabs and segmented items sit edge to edge, so they grow on the axis nothing else
+     occupies. A horizontal inset would steal the neighbour's taps, and on the request
+     page the segmented control is three options in a 350px row - there is no gap to take. */
+  .ant-tabs-nav-list .ant-tabs-tab { padding-block: 6px; }
+  .ant-segmented-item > .ant-segmented-item-label { min-height: 30px; display: flex; align-items: center; justify-content: center; }
+
+  /* Measured at 1x19px against the config page: the steppers are a mouse affordance that
+     cannot be hit by a finger, and `!important` for the same source-order reason as the
+     font floor above - antd keeps its own display value for this box. Keyboard entry and
+     the native numeric keypad remain, and an unusable control is worse than an absent one. */
+  .ant-input-number-actions { display: none !important; }
+  .ant-input-number-input { padding-inline-end: 8px; }
+
+  /* The hit area grows while the control keeps its drawn size: the spacing scale in
+     design.md §4 is what the console's density *is*, so enlarging every 28px button would
+     trade a reachability defect for a layout one.
+
+     **The scope is controls small in both dimensions.** A control that is wide - a labelled
+     text button, or any of the console's 32px-tall buttons, which is antd's own height
+     everywhere - is aimable even when it is short, so it keeps its box. What cannot be aimed
+     at is a control with no label and no width: an icon button.
+
+     `.config-key-action` and `.ant-drawer-close` are listed beside antd's icon-only variant
+     because they are the console's own dense controls rather than antd's: they are plain
+     buttons, so the first version of this rule missed them, and the browser probe missed the
+     gap in turn because its metric accepted an *ancestor* as a hit - which is exactly what a
+     probe just outside an unexpanded button lands on. A control added here must be a real
+     icon-sized control; adding a wide one would steal its neighbour's taps.
+
+     The remaining cost is stated rather than hidden: in a cluster whose gap is under 8px, two
+     adjacent 4px insets overlap, and the DOM-later control wins that band. The clusters that
+     are still that tight are the ones whose controls are wide enough not to need an inset. */
+  .ant-btn.ant-btn-icon-only,
+  .ant-drawer-close,
+  .config-key-action,
+  .ant-pagination-prev,
+  .ant-pagination-next,
+  .ant-input-clear-icon {
+    position: relative;
+  }
+  .ant-btn.ant-btn-icon-only::before,
+  .ant-drawer-close::before,
+  .config-key-action::before,
+  .ant-pagination-prev::before,
+  .ant-pagination-next::before,
+  .ant-input-clear-icon::before {
+    content: '';
+    position: absolute;
+    inset: -4px;
+  }
+}
+/* A short phone in landscape, or a split-screen phone view, can leave the editor and the
+   logs tail shorter than their floors. The floors exist to keep the panel usable, so they
+   lose to the viewport rather than pushing the page taller than the screen. */
+@media (pointer: coarse) and (max-height: 640px) {
+  .log-list { min-height: 240px; }
+  /* The editor's floor is the `520px` *inside* its clamp, so overriding `min-height` alone left it
+     520px tall on a 640px-tall screen and pushed the page past the viewport anyway. The clamp's lower
+     bound is what has to move. */
+  .config-monaco-shell { height: clamp(240px, calc(100dvh - 280px), 800px); }
+}
+

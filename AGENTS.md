@@ -26,13 +26,14 @@ Treat the table below as a hard constraint. Whenever a change touches a "Trigger
 | --- | --- | --- |
 | `CONTEXT.md` | Domain terminology, domain rules | Adding, renaming, or deprecating domain concepts; changes to time windows, i18n, auth, pricing, provider disablement; discovering terminology discrepancies with the implementation |
 | `docs/architecture.md` | Module map, data flows, invariants, schema, background loops | Adding or removing `internal/*` packages; router or middleware changes; data flow stage adjustments; new background loops; database schema or migration gate changes |
-| `docs/design.md` | Source of truth for visual system and antd tokens | Changes to palettes, typography, spacing, motion, or token mappings (must synchronously update `web/src/theme/themeConfig.ts` and `web/src/index.css`) |
+| `docs/design.md` | Source of truth for visual system and the derived palette; `DESIGN.md` is its design-tool summary | Changes to palettes or their derivation, typography, spacing, motion, or token mappings (must synchronously update `web/src/theme/palette.ts`, `web/src/theme/themeConfig.ts` and `web/src/index.css`) |
 | `DESIGN.md` | Brand design system summary (for design tooling) | Same as `docs/design.md`; both must stay strictly synchronized |
 | `PRODUCT.md` | Product positioning, capability matrix, constraints | Capability additions or removals, constraint shifts, target audience or positioning adjustments |
 | `README.md` / `README.zh-CN.md` | User and operator landing page (English and Simplified Chinese) | Command, environment variable, default value, endpoint, deployment topology, or security boundary changes |
 | `docs/adr/NNNN-*.md` | Important and irreversible architectural decisions | When a decision involves real trade-offs, **add a new** ADR; do not rewrite accepted ADRs (supersede them with a new ADR) |
 | `docs/cpamc-parity.md` | Parity matrix against CPAMC | Changing an item from "planned/in-progress" to "covered"; interface capability or page wiring changes; newly identified gaps |
 | `docs/ops/sqlite-operations.md` | Backup, restore, master key governance, migration gates | Migration or backup strategy, retention period, backup count, related environment variable default changes |
+| `docs/ops/vercel-demo.md` | Deployment runbook for the public online demo (Vercel container image) | Changes to the demo's deployment, its environment variables, its platform configuration, or the console steps it needs |
 | `docs/plans/model-prices.md` | Pricing design, matching rules, known limitations | Pricing match chain, sync rules, pricing schema changes |
 
 ### Documentation Maintenance Checklist (Execute Before Declaring Complete)
@@ -124,7 +125,7 @@ Semantic requirements:
 - Meaningless abbreviations are prohibited (`temp`, `tmp`, `a`, `b`, `obj`, `el`, `val`, `res`, `idx`); only pure loop counters may use `i`, `j`. Note that `idx` is particularly dangerous: in quota/credential loops it often represents a string Auth Index, not a numeric index.
 - Booleans must carry a state prefix: `isActive`, `hasPermission`, `canEdit`, `shouldRetry`. React `useState` booleans follow the same rule (`isVisible`, `isSubmitting`).
 - Functions/methods must use verb-noun phrases: `calculateTotal()`, `validateInput()`, `nextDelay()`, `formatRequestTick()`.
-- User-visible copy must not be hardcoded in backend responses or frontend components; new copy must be added to `web/src/i18n/index.tsx` as `[zh, en]` pairs.
+- User-visible copy must not be hardcoded in backend responses or frontend components; new copy must be added to `web/src/i18n/index.tsx` as `[zh, en]` pairs and to every complete catalog under `web/src/i18n/locales/`.
 
 **Boundaries (Do not alter these purely for style)**:
 
@@ -150,6 +151,7 @@ Test layering criteria and "what belongs in the browser" are detailed in [`docs/
 | `pnpm check:ui` | UI fast lane: dev server + mock API, running only affected scenarios; `--list` / `--plan` inspects without launching a browser |
 | `pnpm verify` | Toolchain check (warns on version divergence) + full static gates + worktree secret scan |
 | `pnpm verify:full` | Parallel orchestrated full final gate |
+| `pnpm verify:demo` | Browser smoke test for the demo deployment; `OMCPA_DEMO_URL` checks a remote one instead of starting a local one |
 | `pnpm verify:full:serial` | Serial final gate, used only for diagnosing parallel orchestration discrepancies |
 | `pnpm verify:browser` | Run deterministic browser acceptance against built SPA (with fake CPA fixture) |
 | `pnpm verify:browser:smoke` | Run browser smoke tests covering core auth, dashboard, and request list paths |
@@ -159,6 +161,7 @@ Test layering criteria and "what belongs in the browser" are detailed in [`docs/
 | `pnpm check-i18n` | Find translation keys referenced in code but missing from the dictionary |
 | `pnpm check-docs` | Validate context document path references, retired references, and absolute line numbers (`pnpm test:docs` self-test) |
 | `pnpm check-css-modules` | Validate every `styles[...]` reference matches a defined class in `*.module.css` (`pnpm test:css-modules` self-test) |
+| `pnpm check:motion` | Enforce §7's motion budget: every duration is a `--motion-*` token, no transition animates a layout property, every keyframe honours `prefers-reduced-motion`, and hovers stay within `fast` (`pnpm test:motion` self-test) |
 | `pnpm lint:antd` | Check antd usage and accessibility rules |
 
 ---

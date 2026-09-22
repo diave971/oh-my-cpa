@@ -19,6 +19,10 @@ This runbook is intended for system administrators and operators running Oh My C
    - The Go connection pool is fixed to `MaxOpenConns(1)` and `MaxIdleConns(1)`, with `busy_timeout=5000`, `foreign_keys=1`, `journal_mode=WAL`, and `synchronous=NORMAL`;
    - Concurrent writes are serialized inside the application process rather than relying on SQLite lock retries.
 
+4. **Demo mode is outside every rule above, and the runbook is not about it**:
+   - A deployment with `OMCPA_DEMO_MODE=true` uses its own file, `oh-my-cpa-demo.db`, in the same data directory, and deletes it plus its WAL siblings on every boot. Nothing in it is worth backing up, restoring or migrating, and the file has its own name so that a demo pointed at a directory holding real data cannot have that data deleted with it (`internal/demo.ResetDatabase`);
+   - The rest of this runbook describes the self-hosted database. Keep `docs/ops/vercel-demo.md` for the demo's own operations.
+
 ---
 
 ## 2. Safe Online & Cold Backup Strategies
@@ -133,17 +137,18 @@ Start the container and inspect the health endpoint:
 docker compose -f deploy/compose.full.yml start oh-my-cpa
 ```
 
-- When accessing via the public reverse proxy (such as Caddy):
+- When accessing via the public reverse proxy (such as Caddy), where `BASE_PATH` is the normalised `OMCPA_BASE_PATH` (`/omc` when unset; empty in root mode, which drops the prefix):
   ```bash
-  curl -sf https://${DOMAIN}/omc/api/healthz | jq .
+  BASE_PATH=/omc
+  curl -sf "https://${DOMAIN}${BASE_PATH}/api/healthz" | jq .
   ```
 - When accessing directly on the host (with published ports, e.g. `deploy/compose.omc.yml`):
   ```bash
-  curl -sf http://127.0.0.1:8080/omc/api/healthz | jq .
+  curl -sf "http://127.0.0.1:8080${BASE_PATH}/api/healthz" | jq .
   ```
 - Or via container exec:
   ```bash
-  docker compose -f deploy/compose.full.yml exec cpa wget -q -O - http://oh-my-cpa:8080/omc/api/healthz | jq .
+  docker compose -f deploy/compose.full.yml exec cpa wget -q -O - "http://oh-my-cpa:8080${BASE_PATH}/api/healthz" | jq .
   ```
 
 Confirm the JSON response reports `"database_status": "ok"` and `"status": "ok"` (or `"degraded"` if CPA is temporarily offline).
@@ -169,8 +174,8 @@ When upgrading Oh My CPA, the application automatically inspects and applies une
 
 1. **Automated Safety Gates**:
    - **Disk Space Verification**: Checks available disk space before starting; requires at least `database_size + 4 KiB` free space by default (or configured via `BackupConfig.MinFreeBytes`);
-   - **Pre-Migration Encrypted Backup**: For existing databases with recorded migrations in `schema_migrations`, the application executes `PRAGMA wal_checkpoint(TRUNCATE)` and writes an AES-GCM encrypted backup with a `.sha256` checksum to `OMCPA_DATA_DIR/backups` (permissions `0700/0600`);
-   - **Restore Smoke Test**: Decrypts the backup into a temporary database and verifies that schema tables are readable before proceeding; if verification fails, migration aborts with `ErrBackupRestoreFailed`;
+   - **Pre-Migration Encrypted Backup**: For existing databases with recorded migrations in `schema_migrations`, the application executes `PRAGMA wal_checkpoint(TRUNCATE)` and writes an AES-GCM encrypted backup with a `.sha256` checksum to `OMCPA_DATA_DIR/backups` (permissions `0700/0600`). The check is fail-closed: if the schema state cannot be read at all (the `sqlite_master` lookup fails, or `schema_migrations` exists but cannot be counted), the backup is taken instead of assuming a fresh database;
+   - **Restore Smoke Test**: Decrypts the backup into a temporary database and verifies that schema tables are readable before proceeding; if verification fails, or the `.sha256` sidecar cannot be read, migration aborts with `ErrBackupRestoreFailed`;
    - **Retention**: Keeps the 5 most recent migration backups by default (configurable via `repository.WithMigrationBackup`).
 2. **Expand / Contract Schema Evolution**:
    - Schema modifications strictly adhere to expand-first principles, avoiding breaking older query shapes.
@@ -187,8 +192,32 @@ When upgrading Oh My CPA, the application automatically inspects and applies une
    - Pruning runs once per hour inside `ingest.Maintenance`, while rollups advance every `OMCPA_USAGE_AGGREGATE_INTERVAL` (default 15 seconds);
    - Pruning boundaries are gated by aggregation checkpoints, guaranteeing that detailed records are never removed before rollups have processed them.
 2. **Space Reclamation & Compaction**:
-   - Large-scale historical data deletion leaves free pages inside SQLite;
-   - Run periodic compaction during low-traffic maintenance windows on the host:
+   - Large-scale historical data deletion leaves free pages inside SQLite. The file does
+     not shrink on its own, and a large `-wal` file is normal rather than a fault: WAL is
+     reused between checkpoints rather than truncated continuously;
+   - Two actions are available, and the System Information page runs both. The console's
+     route is the safer of the two for a running deployment, because it takes the write
+     gate described in `docs/architecture.md` §11 - writers wait rather than fail, and a
+     failed write would stop the usage collector and with it the process:
+     - **WAL checkpoint** (`PRAGMA wal_checkpoint(TRUNCATE)`) moves the log's frames back
+       into the database and truncates the log. It is cheap and safe to run often. SQLite
+       reports a blocked checkpoint in the statement's own result row instead of raising
+       an error, so the page reports that outcome as *incomplete* rather than as success;
+     - **Rebuild** (`VACUUM`) releases free pages. SQLite documents that it needs as much
+       as **twice the database file** in free space while it runs, and the console measures
+       that requirement and shows it in the confirmation before the action starts. The
+       console uses a plain `VACUUM`, not `VACUUM INTO` plus a file swap: the connection
+       pool holds an open handle to the file, so replacing it underneath would need every
+       connection closed and the pool rebuilt while other goroutines still hold references
+       to it. A plain `VACUUM` copies into a temporary file and overwrites the original
+       inside an ordinary transaction, so a rebuild that is interrupted — by cancellation,
+       by its own ten-minute ceiling, or by a restart — leaves the original database intact.
+   - The same actions remain available directly through `sqlite3` when the console is not
+     reachable. Stop the application first, or accept the same waiting behaviour the gate
+     provides:
      ```bash
+     sqlite3 /path/to/data/oh-my-cpa.db "PRAGMA wal_checkpoint(TRUNCATE);"
      sqlite3 /path/to/data/oh-my-cpa.db "VACUUM;"
      ```
+   - A maintenance job does not survive a restart: the process running it is gone with it.
+     The console's job status is held in memory for this reason, and the page says so.

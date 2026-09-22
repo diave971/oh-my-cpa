@@ -1,24 +1,32 @@
 import React from 'react';
-import { Tooltip } from 'antd';
+import { Tooltip, App as AntdApp } from 'antd';
 import { BlockOutlined, BulbOutlined, CopyOutlined, RightOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import { LobeIcon, getProviderDefaultIcon } from '../LobeIcon';
+import { getProviderDefaultIcon } from '../LobeIcon';
+import { ProviderBrandIcon } from '../LobeIcon';
 import { useT } from '../../i18n';
+import { copyText } from '../../utils/clipboard';
+import { maskKeyText } from '../../utils/maskKey';
 import { cacheScaleMix, formatCacheRate } from '../../theme/cacheScale';
 import type { UsageEvent } from '../../types/usageEvents';
 import {
-  eventCacheRate,
-  eventKeyLabel,
-  eventResultLabelKey,
-  eventTokensPerSecond,
-  eventUserAgentLabel,
-  formatEventDuration,
-  hasMeasurableTTFT,
-  isNonStreamingEvent,
   resolveProviderInfo,
   type CredentialIndex,
   type ProviderLookupEntry,
-} from '../../types/usageEventView';
+} from '../../types/usageEventIdentity';
+import type { PluginOAuthLogos } from '../../types/pluginOAuthProviders';
+import {
+  eventCacheRate,
+  eventTokensPerSecond,
+  formatEventDuration,
+  hasMeasurableTTFT,
+  isNonStreamingEvent,
+} from '../../types/usageEventMetrics';
+import {
+  eventKeyLabel,
+  eventResultLabelKey,
+  eventUserAgentLabel,
+} from '../../types/usageEventLabels';
 import { requestColumnAlignClass } from './requestColumns';
 import { useTokenDisplayStyle } from '../../types/tokenDisplayContext';
 import { formatTokens, formatTokensFull } from '../../types/tokenDisplay';
@@ -28,6 +36,8 @@ export interface RequestRowProps {
   credentials: CredentialIndex;
   providerIcons?: Record<string, string>;
   configuredProviders?: ProviderLookupEntry[];
+  /** Logos published by installed plugins, keyed by the OAuth provider they register. */
+  pluginLogos?: PluginOAuthLogos;
   onOpen: (id: number) => void;
   isSelected?: boolean;
 }
@@ -38,10 +48,12 @@ export const RequestRow = React.memo<RequestRowProps>(
     credentials,
     providerIcons = {},
     configuredProviders = [],
+    pluginLogos = {},
     onOpen,
     isSelected = false,
   }) => {
     const t = useT();
+    const { message } = AntdApp.useApp();
     // The console-wide token unit style: the list scans compactly while every
     // accessible name keeps the exact count.
     const { style: tokenStyle } = useTokenDisplayStyle();
@@ -52,7 +64,17 @@ export const RequestRow = React.memo<RequestRowProps>(
       providerIcons,
       configuredProviders,
       getProviderDefaultIcon,
+      pluginLogos,
     );
+
+    // Which of the provider's keys answered this request. The server resolves it
+    // from CPA's credential lists and omits it when the credential cannot be
+    // identified, so an absent value prints no line at all rather than a guess.
+    // An OAuth credential has no provider key - its row names the account - so the
+    // line is confined to API-key credentials, and the mask is re-rendered here
+    // from whatever arrived: this surface can then never print a credential even if
+    // a future response carried one.
+    const providerKeyMask = providerInfo.isOAuth ? '' : maskKeyText(event.provider_key_mask);
 
     // 2. Cache rate calculation, plus its stop on the 0–100% colour scale.
     //    The scale stops are design tokens; the badge mixes them in OKLCH via
@@ -74,8 +96,12 @@ export const RequestRow = React.memo<RequestRowProps>(
     const uaLabel = eventUserAgentLabel(event);
     const resultLabel = t(eventResultLabelKey(event));
     const copyRequestId = () => {
-      if (!event.request_id || !navigator.clipboard) return;
-      void navigator.clipboard.writeText(event.request_id).catch(() => undefined);
+      if (!event.request_id) return;
+      // The quick-copy control carries no success state of its own, so a silent
+      // failure would read exactly like a copy that worked.
+      void copyText(event.request_id).then((copied) => {
+        if (!copied) message.error(t('common.copy_failed'));
+      });
     };
 
     const formattedTime = dayjs(event.timestamp_ms).format('MM-DD HH:mm:ss');
@@ -138,7 +164,7 @@ export const RequestRow = React.memo<RequestRowProps>(
         {/* Column 3: provider (credential that answered) */}
         <div className={`req-col req-col-provider ${requestColumnAlignClass('provider')}`}>
           <div className="req-provider-icon-wrapper">
-            <LobeIcon iconId={providerInfo.iconId} size={20} />
+            <ProviderBrandIcon iconId={providerInfo.iconId} logo={providerInfo.logo} size={20} />
           </div>
           <div className="req-provider-content">
             <div className="req-provider-title-row">
@@ -154,6 +180,13 @@ export const RequestRow = React.memo<RequestRowProps>(
             {providerInfo.subtitle && (
               <span className="req-provider-sub" title={providerInfo.subtitle}>
                 {providerInfo.subtitle}
+              </span>
+            )}
+            {providerKeyMask && (
+              /* The tooltip repeats the cell's own mask and nothing more: the value
+                 itself is never held by this page (ADR 0015). */
+              <span className="req-provider-key" title={providerKeyMask}>
+                {providerKeyMask}
               </span>
             )}
           </div>

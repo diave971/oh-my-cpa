@@ -30,6 +30,26 @@ The React bundle is built into `internal/web/dist` and embedded with
 browser can reach is a handwritten JSON endpoint; there is no generic pass
 through to CPA.
 
+### Demo mode is the same process with the gateway replaced
+
+`OMCPA_DEMO_MODE=true` runs this binary against its own fixture; see §13. The shape
+above still describes it, with two edges replaced and one added:
+
+```text
+browser ──▶ Go process (one binary, demo mode)
+              ├─ chi router + the demo policy (internal/api/demo_policy.go)
+              ├─ embedded React SPA
+              ├─ SQLite (temporary, rebuilt on every boot)
+              ├─ CPA management API ──▶ internal/demo's in-process fixture (loopback)
+              └─ usage collector: not started; pricing sync: not started
+```
+
+There is no arrow to models.dev and none to a provider, because the demo starts
+neither the pricing sync nor any capture loop, and the fixture answers the quota
+reads from its own catalogue instead of forwarding them. It does listen: the console
+is served on the port the platform routes to. What it never does is connect anywhere
+but its own fixture.
+
 ## 2. Go package map
 
 Dependency direction is acyclic at package level. `internal/usage` (payload
@@ -53,7 +73,9 @@ cycle even though the `internal/usage` directory appears in both directions.
 | `internal/repository` | SQLite schema, migrations, queries, transactional invariants | `crypto`, `domain`, `pricing`, `security`, `usage` |
 | `internal/usage/ingest` | Collector loop, decode processor, rollup and retention maintenance | `repository`, `management`, `security`, `usage` |
 | `internal/quota` | Per-provider quota probes and normalization | `management` |
-| `internal/api` | Routes, DTO allowlists, audited sensitive reveals, audit writes | all of the above, `internal/web` |
+| `internal/release` | Published-version observation: version comparison, the release feed client, and the stored index | `repository` |
+| `internal/demo` | The publication fixture: an in-process CPA stand-in, the seeded history, and the capture state the console renders | `domain`, `pricing`, `quota`, `repository`, `security`, `usage`, `usage/ingest` |
+| `internal/api` | Routes, DTO allowlists, audited sensitive reveals, audit writes, the demo policy | all of the above, `internal/web` |
 | `internal/web` | `go:embed` of the built SPA | — |
 | `internal/app` | Wiring, background loops, graceful shutdown | all of the above |
 
@@ -63,7 +85,12 @@ Two rules keep the boundary meaningful:
   atomic with a write (cost locking, inbox→event promotion, rollup checkpoints)
   is a repository method, not a sequence of calls from a service.
 - `internal/api` owns the allowlist. A new response field is a deliberate DTO
-  change; the allowlist tests fail otherwise.
+  change; the allowlist tests fail otherwise. Every management surface declares its own
+  response shape (`ProviderItemDTO`, `QuotaItemDTO`, `PluginItemDTO`,
+  `managementAuthFileResponse`, …) instead of forwarding the facade model it decoded CPA
+  into, so a field added there for decoding cannot reach a caller without a decision at
+  this boundary. The plugin projection is also where manifest text is bounded
+  (`management_plugin_projection.go`), because that text arrives from an installed plugin.
 
 ### Known coverage gaps
 
@@ -71,7 +98,7 @@ Two rules keep the boundary meaningful:
   filter section, unrelated to the provider write path: `the list is back to the
   unfiltered page` and `the queued search still lands` each failed once in repeated
   runs before the request-view policies were lifted out of the page. They were fixed
-  rather than tolerated - see §11.3 - and the diagnosis was confirmed by reproducing
+  rather than tolerated - see §12.3 - and the diagnosis was confirmed by reproducing
   them on the unmodified baseline commit, two runs in three, under a 2-CPU
   constraint. The suite now passes eight consecutive trials in the configuration the
   baseline failed, including with the probes running concurrently.
@@ -162,6 +189,116 @@ Properties to preserve when changing this code:
   different provider and report success. The precondition is optional, so a
   caller with no identity to send still works, and a mismatch answers `409`
   rather than writing.
+- The operator's name, website and icon for a provider are stored under the
+  same positional id (`provider_names`, `provider_websites`, `provider_icons`).
+  A delete therefore re-keys every later entry of that family
+  (`shiftPositionalProviderIDs`), because otherwise the name given to one
+  credential would relabel whichever credential took the freed index, and the
+  deleted row's own brand mark would reappear on it. The icon overlay is written
+  by the console through the preferences API rather than by a provider save, so
+  the server both re-keys the stored document and the console replays the same
+  shift into its local cache - a cache that kept the deleted key would write it
+  back on the next icon change. The name and website overlays of an update are
+  written by the gated write itself, after the gateway accepted the update and
+  before the write permit is released. The row, the request list's provider label
+  and the name resolver read these maps, so an entry recorded ahead of a refused
+  write would leave the console naming a credential CPA never accepted; recording
+  it after the permit would let two accepted updates invert their overlay order.
+  If the local overlay write fails after CPA accepted the list, the gate answers
+  `500` with `code: provider_commit_partial` instead of reporting success. The
+  overlay write takes a short context detached from the client request, because a
+  disconnected client must not abandon the local half of an accepted write. The
+  refusal is deliberately not a retry instruction: a create may already have added
+  its row, so the client must reload before deciding what to do next.
+  A partial commit still notifies the pricing manager before the refusal is
+  returned, because CPA's model catalogue may already have changed even though the
+  console metadata transaction did not.
+  Icon values are authored by the console through the preferences API; a provider
+  save never sets them. A delete is the exception to that authorship split: it
+  re-keys the stored icon together with the name and website maps in the same
+  gated metadata transaction.
+
+### Provider families are data, not code paths
+
+CPA stores `claude`, `codex`, `gemini` and `meta` credentials as four lists with
+one shared entry schema and one shared write shape. The console mirrors that:
+`internal/cpa/management/config_keys.go` owns the family values, the endpoints
+and the decoding, and `internal/api/management_providers.go` holds one
+declaration per family (`providerConfigFamilies`) that supplies the presentation
+constants, with the list projection it feeds beside it. The writes live in
+`internal/api/management_provider_crud.go`, the enable/disable toggle in
+`management_provider_status.go` and the model-list pull in
+`management_provider_models.go`, and all of them are written once against that
+table.
+
+Adding such a family is a constant plus a row, and the pieces that must stay in
+step are the same three in both stacks: the family's credential list in CPA, its
+row in that table, and its label in `PROVIDER_FAMILIES`
+(`web/src/types/providerFamilies.ts`). A family that reaches the API but not the
+frontend table renders as a row without a protocol label, so both the contract
+test in `internal/cpa/management/config_keys_test.go` and the browser acceptance
+check on the rendered provider table assert the label rather than the module.
+
+A family an installed CPA does not have answers `404`; that is a missing
+capability rather than an empty or broken list (`IsMissingCapability`), so a
+console release that knows a newer family still works against an older gateway.
+
+Two callers fetch an address the process did not construct: a model-list pull, whose
+URL the operator typed for a provider they run, and a plugin logo, whose URL an
+installed plugin's manifest declares. `internal/api/outbound_fetch.go` owns the
+redirect rule both obey - a redirect that changes scheme or host is refused before
+the next request leaves the process, so neither the provider key nor custom
+provider headers can reach a target the operator did not enter - and the two
+destination policies sit in their own callers, because the authority behind the URL
+is not the same. A model pull accepts HTTP for localhost, loopback and private
+literals, since a self-hosted relay on the operator's LAN is the normal case;
+invalid URL policy answers `400 invalid_model_pull_url` and a refused redirect
+answers `502 model_pull_redirect_refused`. A plugin logo is allowed only over
+public HTTPS, or HTTP to the machine itself, and the resolved address is checked in
+the dialer against everything that is not public internet space - the operator's
+network, the shared-address range an overlay network hands out (`100.64.0.0/10`), the
+reserved IANA blocks and a cloud metadata endpoint - so a hostname that resolves into
+any of them is refused where the connection would actually be made rather than trusted
+because the name looked public. A plugin is not trusted to choose what this process
+connects to, which is also why this fetch connects directly instead of through an
+environment proxy: through one, the dialer would be asked about the proxy's address and
+the target would be unverifiable.
+
+A plugin's logo is fetched for a different reason than a model list: not to reach
+the plugin's host from the browser, but to keep the browser away from it.
+`internal/api/management_plugin_logos.go` fetches the URL a plugin publishes,
+requires an image media type from a bound allowlist, caps the response - for a logo
+published inline as well as for one fetched - and reports it as an inline `data:`
+URL on both `logo` and `metadata.logo`. The whole plugin list shares one fetch
+deadline, because what has to stay bounded is the endpoint the console polls and not
+each request; the result is cached, failures included, so a plugin list that names an
+unreachable host does not refetch it on every poll. An exhausted budget is the one
+outcome that is not cached, since running out of time is not an answer about the
+logo. A logo that cannot be inlined is reported as absent rather than as a URL, which
+is what makes every provider surface fall back to the vendored catalog mark; see §3.
+
+### OAuth providers are one registry
+
+`internal/cpa/management/oauth_providers.go` is the single declaration of which
+authorizations exist, the shape of each (`redirect` or `device`), and whether CPA
+should open its loopback callback forwarder for it (`UsesLoopbackCallback`, sent
+as `is_webui`). The facade's provider list and the client's request are both
+projections of it, and the browser's card registry
+(`web/src/pages/oauthProviderLogic.ts`) carries the matching presentation plus the
+rules for judging a pasted redirect.
+
+The registry is deliberately not an allowlist: CPA plugins register their own
+`{provider}-auth-url` routes at runtime, the console discovers them from the
+plugin list, and an id the registry does not know is forwarded unchanged with no
+per-provider flags. The two registries are held together by an id, so a provider
+is added in both or in neither.
+
+A provider the console's own registry names also needs a brand mark, because a
+surface that cannot draw one falls back to a neutral placeholder - which reads as
+"this provider has no identity" even though its artwork ships in the bundle. The
+catalog marks are declared in `web/src/components/common/providerMetadata.ts` and
+`web/src/types/providerIconIds.ts`; a plugin-registered provider instead brings
+the logo it publishes (§3).
 
 ## 3. Frontend shape
 
@@ -170,14 +307,31 @@ Query for server state.
 
 | Area | Contents |
 | --- | --- |
-| `App.tsx` | Router, lazily loaded pages, theme and locale providers |
+| `App.tsx` | Router, lazily loaded pages, theme and locale providers; the theme provider sits above `ConfigProvider` (Ant Design's tokens are a projection of the resolved palette) while `ThemeServerSync` sits inside `App`, because a refused save is reported through Ant Design's message API |
 | `api/client.ts` | The one typed HTTP client; every endpoint is declared here |
-| `types/` | Wire types, including `usageEventView.ts` (row projection and filters) and `usageEventViewActions.ts` (the view's URL and persistence rewrites) |
-| `hooks/` | `usePreference`, `useLastIntentQueue` (React binding) over `lastIntentQueue` (the framework-free controller) and `disposableSlot` (effect-scoped resource lifetime), `useLogTail`, `useVisibleNow` |
-| `i18n/index.tsx` | The `[zh, en]` dictionary and the `t()` context |
-| `theme/` | `themeConfig.ts` (antd tokens), `cacheScale.ts` (OKLCH cache ramp) |
-| `utils/` | `maskKey.ts`, `externalUrl.ts` (the http/https link rule), `modelOptions.ts` (model-input filtering), `smoothScroll.ts` (the gesture/correction scroll schedule) |
-| `components/`, `pages/` | Feature UI; one page per route, no page owns another. `components/usage/` also carries that page's framework-free policies: `searchDebounce.ts`, `pollingPolicy.ts`, `timeRangePolicy.ts`, `syncPresentation.ts` and `chipDisplay.ts` |
+| `types/` | Wire types, including the request-record view model split by responsibility (`usageEventQuery.ts` for the URL and filter contract, `usageEventViewPreference.ts` for the stored view, `usageEventIdentity.ts` for the credential and provider behind a row, `usageEventGrouping.ts` for how records bucket, `usageEventLabels.ts` for what a row prints, `usageEventMetrics.ts` for its numbers and `usageEventCadence.ts` for the page's timing constants), `usageEventViewActions.ts` (the view's URL and persistence rewrites), `pluginOAuthProviders.ts` (which logo an installed plugin publishes for the OAuth provider it registers, and whether a URL may be rendered as an image at all), `tokenDisplay.ts` (the one layer every user-facing token number is formatted through) and `rollingNumber.ts` (the animated shape of a reading) |
+| `hooks/` | `usePreference`, `useLastIntentQueue` (React binding) over `lastIntentQueue` (the framework-free controller) and `disposableSlot` (effect-scoped resource lifetime), `useLogTail`, `useVisibleNow`, `useIsNarrowViewport` (900px, the shell), `useIsPhoneViewport` (640px, lists and control sizes), `useOverlayHistory` (React binding) over `overlayHistory` (the framework-free overlay/history policy: one sentinel per open Drawer or Modal, so the platform's Back dismisses the topmost one), `usePluginOAuthLogos` (the plugin list read once, projected to provider-key logos), `usePrefersReducedMotion` (the app-owned reduced-motion switch the canvas marks need, since neither `@antv/g2` nor `@ant-design/plots` reads the preference) |
+| `i18n/` | `index.tsx` owns the base `[zh, en]` dictionary and the `t()` context; `language.ts` is the reading-language registry and locale helpers; `locales/zh-Hant.ts` and `locales/ms.ts` are the complete additional catalogs |
+| `theme/` | `palette.ts` (the nine authored tokens, the seventeen-token derivation, the registered palettes and the resolution of a mode plus a selection into a palette), `themePreference.ts` (the stored preference document, its parse and its migration from the earlier bare palette id), `ThemeContext.tsx` (the preference, the system follow, the in-progress edit, and the server sync), `themeConfig.ts` (antd tokens and CSS-variable projection), `colorMath.ts` (OKLCH mixing, luminance and contrast - the one authority for every ratio in the console), `cacheScale.ts` and `heatmapRamp.ts` (the two sequential ramps' stops) |
+| `utils/` | `maskKey.ts` (the console's one caller-key mask shape, kept branch for branch with the server's `security.MaskSecret`), `externalUrl.ts` (the http/https link rule), `modelOptions.ts` (model-input filtering), `smoothScroll.ts` (the gesture/correction scroll schedule), `clipboard.ts` (the one copy path, below) |
+| `components/common/` | What more than one page renders: the shell (`AppLayout`, `HeaderNav`, `AuthGate`, `PreferenceMenus`), and the phone row a list becomes below 640px - `PhoneRow.tsx` (headline, summary, labelled fields, controls) over `phoneRowFields.ts` (derives a row's fields, and one column's rendered cell, from the *table's own* column array, so a list has one description of a record at both widths and a column cannot silently disappear on a phone; see ADR 0012) |
+| `components/`, `pages/` | Feature UI; one page per route, no page owns another. A page composes its surface rather than carrying it: `pages/UsageEventsPage.tsx` renders `components/usage/`'s toolbar, header and rows and takes its state from that directory's hooks, `pages/ProvidersPage.tsx` renders `components/providers/`'s table and editor, and `pages/ConfigPage.tsx` renders `components/config/`'s renderers. The framework-free policies of a surface stay beside it: `components/usage/` carries `searchDebounce.ts`, `pollingPolicy.ts`, `timeRangePolicy.ts`, `syncPresentation.ts` and `chipDisplay.ts`, and `components/config/` carries `payloadRules.ts` and `configDirty.ts` |
+
+Every copy control goes through `utils/clipboard.ts` rather than calling the
+Clipboard API itself. That API exists only in a secure context, and a plain-HTTP
+origin is a supported deployment of this console (`deploy/nginx.conf` listens on
+:80 without TLS, and the dev server is reachable from a LAN or Tailscale device),
+where `navigator.clipboard` is `undefined` outright. The helper therefore falls
+back to the selection path and returns whether the text actually reached the
+clipboard, and no control may announce a copy it did not make.
+
+That fallback carries two constraints a control inside a dialog depends on. A dialog -
+antd's Drawer and Modal both - pulls focus back into its own subtree, so the scratch
+element the selection path types through has to join that subtree rather than
+`document.body`: attached outside it, the element never keeps the focus its selection
+needs and the selection stays empty. And `execCommand('copy')` answers `true` for an
+empty selection, so the helper checks that the scratch element holds focus and its own
+selection before believing the result.
 
 All page routes are `React.lazy` import boundaries so the entry chunk stays
 small; the shell (`AppLayout`, `AuthGate`) is loaded eagerly because every
@@ -186,8 +340,39 @@ route needs it. Brand/provider marks are copied from the pinned
 as SVG URLs. The small catalog used for lookup and grouping is vendored in
 `web/src/generated/lobeIconCatalog.json`; the React icon package is not a
 dependency, because importing it would pull hundreds of components into the
-eager bundle. Dashboard KPI cards use `@ant-design/charts` in a dedicated
-`vendor-charts` chunk, lazily loaded so the entry bundle stays small.
+eager bundle; the OMC Settings page is lazy for the same reason, because the palette editor it carries
+pulls in Ant Design's colour picker. Dashboard KPI cards use `@ant-design/charts` in a dedicated
+`vendor-charts` chunk, lazily loaded so the entry bundle stays small. Their
+numbers animate through `@number-flow/react`, which the dashboard page imports
+directly instead of through a vendor chunk: only that route uses it, and being on
+a lazy route boundary it never enters the entry's static module graph. The marks
+themselves morph between revisions on the same motion token, gated by the
+reduced-motion hook above. `docs/design.md`
+§7 rules 5 and 8 own the motion they are allowed to run, and ADRs 0007 and 0008 own the
+trade-offs.
+
+**A plugin's published logo outranks the catalog mark for the provider it
+registers.** A plugin that declares `supports_oauth` may publish its own logo, and
+when it publishes usable artwork that mark is the one drawn: the plugin is the only
+authority on what its own provider looks like, and the vendored catalog cannot be
+updated by installing a plugin, so guessing a brand from the provider key would
+label the operator's own credential with somebody else's mark.
+It is not loaded from the plugin's host, though - the deployment must not
+depend on a CDN, and the console's CSP allows images only from itself or inline -
+so the Go process inlines it (§2) and `types/pluginOAuthProviders.ts` resolves the
+plugin list into provider-key logos (including a plugin whose auths are typed by
+its own id rather than by `oauth_provider`). `LobeIcon.tsx`'s `ProviderBrandIcon`
+renders it - one component for the provider tabs, the quota and credential cards,
+the request records, the provider table and the dashboard's provider rows, so
+those surfaces cannot disagree about the same provider. Only inline artwork is
+rendered: a provider no plugin owns, a logo that could not be inlined, and a value
+at a scheme the browser may not load all fall back to the catalog mark, and a
+plugin-owned row shows the plugin's mark even when an operator icon override is
+stored for that key, and it does not depend on the plugin being enabled — the mark
+identifies the provider behind a credential or a past request, which does not stop being
+true when the plugin is switched off (ADR 0014). ADR 0013 owns the trade-offs behind the
+other choices here, including why a plugin-declared logo URL is held to a stricter
+destination policy than an operator-typed one.
 `components/resources/` and `components/icons/PresetIcon.tsx`
 are retained from the retired triage console and are currently unreferenced; the
 backend discovery/binding model they rendered is still live behind Providers and
@@ -199,10 +384,23 @@ CSS module as `Record<string, string>`, so a stale class reference compiles and
 fails silently at runtime. `pnpm check-css-modules` is the guard that closes
 that hole.
 
+The motion budget is enforced the same way. `pnpm check:motion` reads the
+stylesheets and the inline `transition:` strings in components, and fails on a
+duration that is not a `--motion-*` token, a transition on a layout property (or
+on `all`), a keyframe animation with no `prefers-reduced-motion` counterpart, and
+a hover transitioning colour outside the fast token; the disclosures that need a
+layout animation are listed in its `EXCEPTIONS` table with a reason each, and a
+stale entry is itself a failure. The budget it enforces is stated in
+`docs/design.md` §7, and the reasoning behind the hover bound is ADR 0009.
+
 ## 4. Request and session flow
 
 1. `POST <base>/api/auth/login` with the CPA management key. The handler
    compares it against `OMCPA_CPA_MANAGEMENT_KEY`; there is no second password.
+   Failed attempts are throttled by the direct peer address. Forwarding headers
+   are consulted only when that peer belongs to `OMCPA_TRUSTED_PROXY_CIDRS`, and
+   the rightmost untrusted address in the chain is used, so a client-supplied
+   leftmost value cannot mint a fresh limiter bucket.
 2. On success the session manager derives an HMAC key from the management key
    and issues an HttpOnly, SameSite=Strict cookie (`Secure` when
    `OMCPA_PUBLIC_URL` is HTTPS) with a 12-hour expiry.
@@ -223,6 +421,14 @@ that hole.
    write. This is a deliberate removal of step-up authentication, not a
    frontend-only prompt change: the grant endpoint and its state are gone.
 
+6. The two list endpoints that can carry plaintext credentials on request,
+   `/management/api-keys?include_keys=true` and
+   `/management/providers?include_keys=true`, write `api_key.reveal` or
+   `provider.reveal_keys` before the response is emitted. The record identifies
+   the list and carries counts rather than one event per credential. Audit-write
+   failure answers `500` and no credential is returned; masked reads are not
+   audited because no credential leaves the server (ADR 0018).
+
 The key itself is encrypted with `OMCPA_MASTER_KEY` and stored on the
 `cpa_instances` row, where `bootstrapDefaultInstance` refreshes it at every
 startup so a rotation needs no SQLite surgery.
@@ -231,8 +437,8 @@ startup so a rotation needs no SQLite surgery.
 
 ```text
 POST /api/v1/instances/default/discover
-  → internal/cpa/management reads auth-files, codex/claude/gemini API keys,
-    openai-compatibility entries
+  → internal/cpa/management reads auth-files, the claude/codex/gemini/meta API-key
+    lists, and openai-compatibility entries
   → cpa/discovery derives a stable resource key and binding fingerprint
   → repository upserts discovered_resources + cpa_bindings (served via /api/v1/resources)
 ```
@@ -241,10 +447,21 @@ The resource key resolution order and the ban on array position are fixed by
 ADR 0002: immutable upstream id, then family-scoped `auth_index`, then a
 versioned keyed HMAC of the credential material, then a fingerprint of
 non-sensitive metadata, and finally an explicit `identity_collision` marker
-rather than a silent merge. Secrets never enter a key, a fingerprint input that
-is stored, or a response DTO. (The Providers and OAuth management pages inspect
+rather than a silent merge. Secrets never enter a key or a stored fingerprint
+input, and a response DTO carries one only for the surface that edits it and only
+when it asks for it (`?include_keys=true`, ADR 0015); every other response carries
+a display mask. (The Providers and OAuth management pages inspect
 and manage CPA runtime entries directly through `/api/v1/management/providers`
 and `/api/v1/management/auth-files`, layering local preference metadata on read.)
+Auth-file edits use CPA's field patch but do not treat its `200` as proof:
+the facade reads the runtime entry and a server-side projection of the
+downloaded JSON back before returning success. The projection exposes only
+prefix, proxy URL, expiry, disable-cooling, WebSockets, using-API, note, priority,
+weight and excluded models; tokens and other credential material stay inside
+the Go process. Global OAuth model aliases are managed separately through
+`/api/v1/management/auth-files/model-aliases`: the facade replaces one provider
+at a time, reads CPA back before reporting success, and audit logs the write.
+These writes and safe reads are audit logged.
 
 `cpa_bindings` carries `missing_at_ms` and `ON DELETE SET NULL` so upstream
 removal marks a binding missing without cascading into history.
@@ -261,7 +478,7 @@ CPA queue / subscription
                          retention purge
   → /management/dashboard, /management/dashboard/tail,
     /management/dashboard/token-heatmap, /management/dashboard/models,
-    /usage/events
+    /management/dashboard/providers, /usage/events
 ```
 
 The pipeline exists because CPA's queue is destructive and short-lived: the only
@@ -478,7 +695,14 @@ the first page, so the console counts arrivals against an ingestion id
 (`?since=<row id>`) rather than diffing the rows it has loaded — which would report
 "nothing new" while records were flowing in. On a real instance **5415 of 5515**
 records sort below page one, so that distinction is the normal case, not an edge
-case.
+case. The arrival count is resolved before the list scan, and the list result set
+is closed before the function returns. With one SQLite connection, issuing the
+count after the list could otherwise keep both statements on the same WAL
+snapshot, so a record committed between polls would remain invisible until a
+later transaction happened to replace it. The acceptance fixture covers the same
+refreshing-window path without a second process writing after the app opens the
+database: it seeds one future-dated row before startup, and a later poll admits
+that row once the sliding window reaches it.
 
 Request *time* is also the windowing key (`timestamp_ms >= from AND <= to`) and the
 axis of every rollup and chart, so the list, the window and the charts all agree on
@@ -518,6 +742,79 @@ parameters), not one query per row, and it is best-effort: a failure leaves
 the list. The fingerprint remains the filter identity, so a rename cannot change
 what a saved filter or a drill-down link selects.
 
+Because neither a mask nor an index can stand in for the value, the key list is
+the one reader that asks the management API for it: `/management/api-keys` sends
+`ClientAPIKeyItemDTO.Key` as a display mask unless the caller opts in with
+`?include_keys=true`, which is the flag the provider list already uses. The key
+page opts in, joins the overlay by that value, and keeps its own query cache entry
+so the dashboard's key picker — which only needs the mask — cannot be served the
+values, and the key page cannot be served the masks (ADR 0015).
+
+### Provider key masks: which upstream key answered
+
+A request record names its provider, and an operator reading it needs one more
+fact — which of that provider's keys the request actually went through. CPA does
+not put that key in the usage payload: it publishes the credential's runtime
+`auth_index` and nothing else. The keys exist only in CPA's configuration, so the
+mask is resolved on the server while the request list is read, and returned on each
+record as `provider_key_mask`.
+
+`internal/api/usage_provider_key_masks.go` owns that resolution. It reads the
+credential lists CPA currently reports — the four config API-key families and the
+`openai-compatibility` providers — and indexes each one by auth index.
+
+**The record's own provider label chooses the list, and an unrecognized label is not
+a candidate at all.** CPA labels a config API-key credential with the family name
+(`codex`, `claude`, `gemini`, `meta`) and a compatibility credential with
+`openai-compatible-<upstream name>`
+(`management.OpenAICompatibilityLabelPrefix`, the same constant the dashboard's
+provider grouping uses). Those two shapes are what an attributable request looks
+like; anything else — an OAuth-only provider, a family the console does not manage —
+reads nothing, so an index that happens to collide across lists can never be answered
+by the wrong one. Within each list the match is by index alone, deliberately:
+renaming a compatibility provider in CPA changes the label on later records while the
+credential, and CPA's index for it, stay the same, so a name-scoped match would
+orphan history that is still perfectly identifiable.
+
+Four properties are load-bearing:
+
+- **It resolves against the configuration as it is read, not as it was at request
+  time.** A credential that has been rotated or deleted since the request stops
+  being offered as that index's owner, so that record prints nothing once the cached
+  read of its list expires — at once if the operator removed it through this console,
+  and within the TTL if it was changed outside it. The console cannot reconstruct a
+  key it can no longer read, and a plausible-looking mask would be a fabrication
+  rather than a display label.
+
+  A provider that has merely been **switched off** is deliberately not treated as a
+  removal. CPA reports no auth index for a disabled compatibility provider, so such
+  an entry claims nothing anyway, while filtering on the flag would additionally hide
+  the key of a request served *before* the provider was switched off — the provider's
+  current state is not part of the credential's identity, and that label is a true
+  fact about the request rather than a wrong one. An index claimed by both a disabled
+  and a live entry resolves to nothing, so the protection that matters is kept.
+- **Nothing is guessed.** An index no entry claims, a key CPA reports without an
+  index (the compatibility list's legacy `api-keys` array), an index two entries
+  claim, a record with no index at all, and a provider that has exactly one key but
+  does not claim the record's index are all left empty. The duplicate case is resolved
+  to nothing even when the two masks are identical, because neither an index nor a
+  mask is an identity — the same rule the resource join follows.
+- **Only an API-key credential has one.** An OAuth record names the account it used
+  instead, and its index lives in the same column, so an auth-type check stands in
+  front of the lookup. The mask is display only, is stored on no row, is never a
+  filter value, and the property is absent rather than empty when nothing was
+  resolved; only `security.MaskSecret` output ever leaves the process, and a failed
+  read is reported through the same public classifier every other gateway failure
+  uses, because a management error body can echo the credential it rejected.
+- **It is best effort and bounded.** The lists are read at most once per TTL, one
+  read is shared by concurrent pages, failures are negatively cached, and the whole
+  enrichment has its own short deadline. A gateway that is down, slow or missing a
+  family leaves the masks empty and returns the request list unchanged, because a
+  display label must not be able to fail the page whose job is to show request
+  history. A write through this console drops the cached read, so an edit is
+  reflected immediately; a read that was already in flight when that write landed is
+  withheld as well as not stored, since the list it saw is the one being replaced.
+
 ### Streaming status and throughput (TPS) derivation
 
 CPA usage payloads include a boolean `stream` field indicating whether the request
@@ -532,7 +829,7 @@ its whole payload in one chunk. Throughput therefore keys on the observed residu
 window rather than the recorded mode:
 
 - When `latency_ms - ttft_ms >= MIN_STREAMING_GENERATION_WINDOW_MS` (50 ms,
-  defined in `web/src/types/usageEventView.ts`), `ttft_ms` is treated as a genuine
+  defined in `web/src/types/usageEventMetrics.ts`), `ttft_ms` is treated as a genuine
   generation boundary and TPS is `output_tokens * 1000 / (latency_ms - ttft_ms)`.
 - When TTFT is missing or the residual window is collapsed, the response was not
   observed progressively enough to isolate generation. TPS falls back to
@@ -590,21 +887,22 @@ Three properties are load-bearing rather than incidental:
   cost at all". The console therefore carries cost bounds as decimal strings end
   to end — field, URL and preference document — because a nano-dollar amount does
   not survive a round trip through a double.
-- **Private values are filtered, never projected.** `endpoint` narrows the list
-  without the endpoint ever appearing in a list payload, and the shared search box
-  deliberately excludes `client_ip`, `x_forwarded_for` and `endpoint`. `source`
-  and `api_group_key` are fingerprinted at the persistence boundary, so a filter
-  matches the stored fingerprint the facet offered, never the plaintext.
-- **Anonymising projections are idempotent and shape-tolerant.** A record is
-  masked twice — once by `internal/usage`, again by the persistence boundary — so
-  `security.MaskIP`/`MaskForwardedFor` accept their own output (an IPv4 `/24` or
-  an IPv6 `/64`) and re-mask it, and a narrower prefix such as `/32` is reduced to
-  the coarse network rather than passed through as already anonymised. An
-  endpoint arrives as the request line CPA handled (`POST /v1/chat/completions`),
-  not as a bare path, so `PublicEndpoint` keeps the method while still stripping
-  query, fragment and authority credentials. Both are pinned by tests that run a
-  raw payload through decode *and* insert: a unit test on either half alone cannot
-  see a second pass that destroys the first one's output.
+- **Diagnostic values are protected, not list fields.** `client_ip` and
+  `x_forwarded_for` are preserved as the exact peer address and complete valid
+  proxy chain for the single-record detail view, while list payloads and the
+  shared search box omit both. `endpoint` is likewise available only on detail.
+  `source` and `api_group_key` are fingerprinted at the persistence boundary, so
+  a filter matches the stored fingerprint the facet offered, never the plaintext.
+  Historical rows written under the earlier `/24` and `/64` policy remain masked;
+  they are not guessed or backfilled.
+- **Address projection is shape-tolerant and explicit.** `NormalizeClientIP`
+  accepts IPv4, IPv6 and valid host:port forms and removes the transport port;
+  `NormalizeForwardedFor` keeps every valid hop in order. An endpoint arrives as
+  the request line CPA handled (`POST /v1/chat/completions`), not as a bare path,
+  so `PublicEndpoint` keeps the method while stripping query, fragment and
+  authority credentials. Round-trip tests run a raw payload through decode *and*
+  insert, proving the protected detail value survives both boundaries without
+  widening the list contract.
 
 ### 6.2 Facets
 
@@ -645,9 +943,10 @@ worth printing. That decision is a property of the *page*, not of one bucket —
 window — so a line served by a single credential reads as the provider alone
 while a line split across two names both.
 
-Grouping keys and labels are computed in `web/src/types/usageEventView.ts`, which
-is what the logic test harness loads, and are pinned there rather than by reading
-the DOM. Two properties matter beyond the labels:
+Grouping keys and labels are computed in `web/src/types/usageEventGrouping.ts` and
+`web/src/types/usageEventLabels.ts`, which is what the logic test harness loads,
+and are pinned there rather than by reading the DOM. Two properties matter beyond
+the labels:
 
 - **The stored preference migrates.** `parseUsageEventsView` maps the retired
   `provider` and `credential` values onto `source`, so an operator returning to a
@@ -699,6 +998,22 @@ the resulting snapshot is normalized and stored in `quota_snapshots`. This is th
 only place Oh My CPA uses CPA as a request proxy, and it is server-initiated:
 there is no user-supplied URL or generic `/api-call` surface.
 
+A provider is observed only once `internal/quota` both recognizes it
+(`DetectProvider`) and implements its probe; a credential whose provider has no
+probe is reported with `refresh_supported: false` rather than as a failed fetch.
+
+A plan's renewal instant is carried with its provenance. Codex probes the
+subscription endpoint on every refresh and records `expires_source:
+live_subscription` when it answers, so an expiry the usage payload happens to
+carry is still replaced by the fresher reading. When that probe fails, an expiry
+the usage payload already supplied is kept without a source — it is current but
+has no verified provenance — and only a plan with no expiry yet falls back to the
+credential's `id_token` claim, recorded as `credential_snapshot`, because upstream
+only ever moves that window forward and a token can be minted after the period it
+still describes. The console renders a snapshot as a `≥` bound with an unverified
+marker and never as a countdown, so a stale claim cannot read as a verified
+renewal date.
+
 ## 9. Storage
 
 | Table group | Tables | Notes |
@@ -707,11 +1022,28 @@ there is no user-supplied URL or generic `/api-call` surface.
 | Usage | `usage_inboxes`, `usage_events`, `error_events`, `ingest_gaps`, `usage_overview_hourly_stats`, `usage_overview_daily_stats`, `usage_aggregation_checkpoints` | Milliseconds; raw payloads encrypted |
 | Pricing | `model_prices`, `model_price_versions`, `pricing_sync_state`, `pricing_model_catalog`, `pricing_catalog_state` | Versions are append-only via triggers |
 | Operations | `audit_events`, `ui_preferences`, `quota_snapshots`, `schema_migrations` | Audit has no update or delete path — only `RecordAuditEvent` writes and read queries exist, and export itself is audited; the schema carries no enforcement trigger, so the guarantee lives in the repository API |
+| Release observation | `release_index`, `release_check_state` | Migrations 024 and 025; `truncated` is added by 025, so a database that applied 024 before it existed still gains the column. `release_index` holds one row per published version (tag, name, publication time, prerelease flag) and is **replaced as a unit per product** by `PublishReleaseSnapshot`, because a feed that stops listing a withdrawn release must stop the console claiming it exists. `release_check_state` holds one row per product — the last attempt and success times, the redacted failure reason, the latest tag, the ETag and the truncation flag — and is written by `RecordReleaseCheckAttempt`/`PublishReleaseSnapshot`/`RecordReleaseCheckFailure`, read by `ListReleases` and `GetReleaseCheckState(ForRepository)`. A release's prose body is **never stored**: it lives in bounded process memory for the life of the process, so an index without notes still names the versions and links to the source (see §10) |
+
+The management system surface is five routes: `GET /management/system` (the page),
+`GET /management/system/releases` (one product's merged change log), `POST
+/management/system/check-updates` (a check, subject to the floor), `GET
+/management/system/maintenance` (the running or last job) and `POST
+/management/system/maintenance/{checkpoint,vacuum}`. The check answers `200` with the two
+products' states and `served_from_cache`; a maintenance POST answers `202` on admission,
+`409` when a job is already running, `507` when a rebuild cannot be admitted for space, and
+`503` once the service is shutting down. Every one of them answers `503` when the handler was
+built without the corresponding service, which is how a deployment that does not offer the
+surface behaves.
 
 Migrations are embedded from `migrations/` and applied in filename order inside
 one transaction each. A migration against an existing on-disk database first
 writes an AES-GCM backup plus SHA-256 sidecar, restores it as a smoke test, and
-keeps the newest five. Migration 004 additionally runs a Go governance hook
+keeps the newest five. The gate that decides whether a backup is needed reads
+`schema_migrations` first, and an unreadable schema state - a failed
+`sqlite_master` lookup, or a table that exists but cannot be counted - is treated
+as "back up first" rather than as "nothing applied yet". The smoke test likewise
+refuses to pass when the sidecar digest is missing, because an unverifiable backup
+is not a recoverable one. Migration 004 additionally runs a Go governance hook
 inside its transaction to sanitize historical rows. Rollback is forward-only:
 fix a defect with a new migration, never by editing `schema_migrations`
 (`docs/ops/sqlite-operations.md`).
@@ -723,9 +1055,149 @@ fix a defect with a new migration, never by editing `schema_migrations`
 | HTTP server | `app.Run` | Fatal; shutdown drains 10s |
 | Usage pipeline | `app.Run` → `ingest.Pipeline` | Fatal; a stopped collector must not serve silently stale numbers |
 | Pricing sync | `app.Run` → `pricing.Service` | Best effort; prices go stale, capture continues |
+| Release sweep | `app.Run` → `release.Service` | Best effort; the stored index and its timestamps go stale, and the page says so. Every six hours, first run delayed by one interval so a restart loop cannot become a request loop |
 | Rollup + retention | `ingest.Maintenance` inside the pipeline | Retried on its own interval; errors surface in ingest status |
+| Database maintenance | `repository.MaintenanceService`, started by an operator request | Never started automatically; a job's outcome is recorded in memory and on the audit trail |
 
-## 11. Test layering
+A demo deployment starts only the HTTP server: its history is the fixture, so there
+is no collector to lose and no sync loop to let prices go stale. §13 and
+`internal/demo` explain what replaces them.
+
+The release sweep is the only loop that talks to a host outside the deployment's own
+gateway, and it is the one loop whose absence is invisible rather than harmful:
+without it the page shows the last known index. It can be switched off with
+`OMCPA_UPDATE_CHECK_ENABLED=false`, which stops the sweep while leaving the page's own
+check and the manual button working — those are an operator asking a question rather
+than the process deciding to reach the internet.
+
+`OMCPA_UPDATE_CHECK_ON_PAGE_LOAD=false` is separate because it answers a separate question: may
+opening a page spend a request from a budget shared per address? A self-hosted deployment wants
+that enabled — the page exists to answer "is there a newer version" — while an air-gapped install
+or a test suite wants it off, since a page visit there is not a reader asking anything. The manual
+button is unaffected by either switch. The acceptance harness sets both, and the reason is worth
+recording: disabling the sweep alone does not stop the traffic, because the sweep's first run is a
+full interval away and the suite visits the page that checks on open.
+
+### What a stored failure may contain
+
+A failed check records a redacted reason: one `security.RedactText` copy serves the stored
+`last_error`, the `CheckError` the page renders, and every log line, because all three can leak and
+a raw form kept for one of them defeats the other two. The reason is a remote response, and a feed or
+a proxy can echo back a token it was sent.
+
+The redactor's vendor-prefix rule had a gap worth recording: it matched only a hyphenated separator,
+so `ghp_...` - the shape a GitHub API error actually carries, and this feature reads GitHub - passed
+through untouched. It now accepts the separators the real prefixes use, and it has positive and
+negative controls; it had no test before, which is why the gap survived.
+
+### Why a check has a floor
+
+`CheckFloor` is fifteen minutes, and every path that reads the feed passes it. The feed is
+one shared per-address budget — sixty requests an hour for the unauthenticated GitHub API —
+while the page is loaded far more often than a release is published. A check costs one
+request per product and a second only when a feed's first page is full, so an unthrottled
+page-load check spends up to four requests per view: fifteen views exhaust the allowance for
+every client behind that address. That is what happened, and it is how the floor was
+calibrated.
+
+Inside the floor a check is answered from the stored index and reports `served_from_cache`,
+so the button says the result was cached rather than claiming a check it did not perform. The
+floor is measured from the last attempt rather than the last success, because a failing feed
+is when an operator reloads most and re-learning the same error would spend the budget twice.
+The six-hour sweep is exempt by construction: it is far outside any floor.
+
+### The release check does not store release notes
+
+A release's Markdown body is held in process memory and nowhere else. The index —
+tags, names, publication times, prerelease flags — is stored, because that is what
+answers "is there a newer version" after a restart or while offline. The notes are
+not, and the page states which of the two it has: an index with no notes still names
+the versions and links to the source, while an empty log would claim nothing changed.
+
+Two details follow from that split. A `304` from a conditional request is only
+trusted while the process still holds the body the validator describes, so stored
+ETags are cleared at start-up and the first check after a restart is unconditional.
+And a failed check never clears the stored index or the last-success time: the page
+keeps the previous answer and reports the failure with its reason and the time of the
+attempt, rather than going blank or presenting stale data as current. The routine
+"last checked" readout was deliberately dropped from the cards - it was the same
+timestamp on every one of them - so staleness is now something the page states when a
+check fails rather than a number a reader has to interpret.
+
+## 11. Database maintenance and the write gate
+
+Two operator-issued actions rewrite the database: `PRAGMA wal_checkpoint(TRUNCATE)`
+and `VACUUM`. Both are offered from the System Information page and both are
+guarded by a write gate, because the failure mode without one is not a slow request:
+`internal/usage/ingest`'s flush records an ingest gap and returns an error, and
+`app.Run` treats a stopped pipeline as fatal on purpose, so a writer that lost a
+race against a rebuild would take the process down with it.
+
+SQLite's own locking cannot express the boundary. Under WAL a reader never blocks a
+writer and a writer never blocks a reader, and `busy_timeout` makes a blocked call
+retry rather than stopping a writer from starting. So `internal/repository` wraps
+its driver: a statement that is not provably a read passes a gate that maintenance
+holds exclusively, writers wait rather than fail, and a queued writer can abandon its
+wait when its own context ends.
+
+The classification is deliberately asymmetric and deliberately narrow — only `SELECT`,
+`VALUES` and `EXPLAIN` count as reads. `PRAGMA` is gated whatever its argument, because
+the family mixes reads and writes. `WITH` is gated even when the statement selects,
+because a common table expression can introduce an `UPDATE`, `DELETE` or `INSERT` and
+its first keyword does not say which. A string containing a second statement is gated
+however it starts, because a first-keyword classifier cannot see past the first
+statement at all. Each of those refusals costs one wait during a rebuild; the direction
+that would be cheap is the direction that can terminate the process.
+
+Seven properties of the arrangement are load-bearing:
+
+- Maintenance runs on a context marked as the holder's own (`withMaintenanceContext`),
+  because a maintenance statement that passed the gate again would queue behind the
+  exclusivity it already holds.
+- Maintenance uses its own database connection rather than the pool's. A writer takes
+  the gate inside its driver call, by which point `database/sql` has already handed it a
+  connection, so a waiting writer *holds* a connection while it waits; with one pooled
+  connection, maintenance needing that connection would wait for a writer that is
+  waiting for the job. This was observed as a real deadlock, and
+  `TestMaintenanceDoesNotDeadlockAgainstAWriterHoldingAConnection` reproduces it.
+- A write transaction holds the gate until it ends, not per statement: SQLite's write
+  lock outlives the statements inside a transaction. The `driver.TxOptions.ReadOnly`
+  hint does not exempt a transaction, because modernc.org/sqlite only uses it to pick
+  the `BEGIN` mode string — such a transaction can still write.
+- No request performs database work after admitting a job. The handler records
+  *admission* and returns the status the start returned; the job records its own
+  completion through an observer once it has released exclusivity. A request that wrote
+  anything afterwards would hold a connection while the job held the gate, so its `202`
+  would not arrive until the rebuild finished.
+- The gate's row wrappers forward the driver's optional column-metadata interfaces and
+  assert that at compile time, because a wrapper satisfying only `driver.Rows` compiles
+  while silently discarding what the driver reports about each column's type.
+- The gate belongs to one `repository.DB` rather than to the process, so a rebuild in one
+  database cannot stall writes to another. Every pool derived from that same `DB` shares its
+  gate — which is what the maintenance service relies on — while two separate `Open` calls over
+  the same file keep separate gates and are therefore not mutually exclusive. That is the
+  contract the code implements, and a deployment runs one `Open`.
+- Job status lives in memory (`MaintenanceService`), not in a table. A status endpoint
+  that read the database could not answer while a job held the connection — which is
+  exactly when an operator asks. The service owns a context derived from the
+  application's, so a job cannot outlive the process, and `Close` cancels and joins it
+  before releasing the connection.
+
+`VACUUM` is run as a plain `VACUUM` rather than `VACUUM INTO` plus a file swap. The
+pool holds an open handle, so replacing the file underneath it would need every
+connection closed and the pool rebuilt while other goroutines still hold references
+to it. A plain `VACUUM` copies into a temporary file and overwrites the original
+inside an ordinary transaction, so an interrupted rebuild leaves the original intact;
+`TestInterruptedVacuumLeavesTheDatabaseUsable` cancels one and then checks both the
+surviving rows and `PRAGMA integrity_check`. Its documented requirement — up to twice
+the database file in free space — is measured and shown in the confirmation before the
+action runs, as a pre-check rather than a guarantee. A checkpoint that SQLite reports
+as blocked is surfaced as an incomplete result, not as a success: `wal_checkpoint`
+returns its outcome in a row of three integers and does not raise an error when it
+cannot proceed, and a rebuild that is itself fine but cannot truncate the log reports
+that partial outcome rather than either success or failure.
+
+## 12. Test layering
 
 The suite is split by what each layer can actually prove, not by which runner is
 fashionable. The rule is **Browser Everything → Browser Only Where Browser
@@ -738,13 +1210,21 @@ claim, and it stays in Chromium only when the claim is about the engine.
 | Mechanical repository gates | `pnpm test:docs`, `pnpm test:i18n`, `pnpm test:css-modules`, `pnpm test:dev-target`, `pnpm test:affected-checks`, `pnpm test:sync-web-dist`, `pnpm test:install-chromium`, `pnpm test:check-ui-plan` | Path references, translation keys, CSS class references, the dev proxy target, the embedded-distribution sync, the Chromium installer's decision, the fast-path planner and the UI scenario planner. |
 | **UI fast path** (development only) | `pnpm check:ui` | The subset of browser claims a change can affect, against the **dev server** with mocked routes. No `pnpm build`, no Go binary, no fake CPA. This is the only layer where `React.StrictMode`'s double-invoke happens, so it is the only place a hook that disposes what it should re-create can be observed. |
 | Cross-stack smoke | `pnpm verify:browser:smoke` | The thin path a pull request needs: `/omc` redirect, sign-in rejection and success, the dashboard and request list rendering their seeded rows, no console or page error. |
+| Cross-stack P0 gates | `pnpm verify:browser:p0` | Pull-request release gates over the request-record/live-tail suite and the auth-file/OAuth scheduling-field suite, using the same built binary and deterministic fixture. |
 | Cross-stack acceptance | `pnpm verify:browser` | The whole stack against the fake CPA: auth, every route's render and secret boundary, key aliases, provider enable/disable and its concurrent path, live-tail polling, quota, OAuth. |
-| Browser-only probes | `pnpm verify:probes` | The same claims as the UI fast path, but against the built SPA for release. Drawer/modal stacking and hit-testing, column geometry and truncation, the responsive alignment override, dashboard trend mark paint, refresh sequencing under a held response. |
+| Browser-only probes | `pnpm verify:probes` | The same claims as the UI fast path, but against the built SPA for release. Drawer/modal stacking and hit-testing, column geometry and truncation, the responsive alignment override, dashboard trend mark paint, refresh sequencing under a held response, the platform's Back dismissing each overlay class, the phone rendering of each list surface against its table, and the touch rules on a deliberately coarse-and-hoverless context. |
+| Demo smoke | `pnpm verify:demo` | The demonstration as a deployment: the binary in demo mode with no gateway anywhere in its environment, every console page rendering its own fixture data with no failed request and no script error, the refusals reached with `fetch` rather than through the page, and one permitted edit reporting that it is not durable. `verify:browser` cannot cover this, because it drives the self-hosted path against a fake gateway. |
+
+Pull requests run smoke followed by the P0 gates. Master retains the full
+`verify:browser:release` orchestration, which runs cross-stack acceptance and the
+browser-only probes concurrently.
 
 ### 11.0 The fast path is not a cheaper gate
 
 `check:ui` and `verify:probes` run the **same scenarios** from
-`scripts/acceptance/scenarios.mjs`; the difference is what they run them against, and
+`scripts/acceptance/scenarios.mjs`, which orders the implementations under
+`scripts/acceptance/probes/` (one module per product surface); the difference is
+what they run them against, and
 that difference is not a cost trade - it is a coverage difference in both directions.
 
 `check:ui` cannot replace `verify:probes`, because the dev server and a mocked API
@@ -782,6 +1262,12 @@ Two properties of this split are load bearing.
 `scripts/browser-acceptance.mjs` once - `PURE`, `COMPONENT`, `BROWSER` or
 `CROSS-STACK` - and every assertion that left the browser names the test that
 replaced it. An assertion may move; it may not disappear silently.
+`scripts/browser-acceptance.mjs` is now the lifecycle/orchestration entrypoint.
+Release domains live in focused modules under `scripts/acceptance/`: auth files,
+key management, usage events and live-tail behavior, providers, observability,
+configuration and plugins, theme and brand artwork, and OAuth flows. Each module
+receives the shared browser harness it needs and owns one product surface rather
+than becoming another catch-all script.
 
 **`pnpm test:fast` never pays for the browser.** No ordinary change may build the
 SPA, build a Go binary, start Vite, start Chromium or start the fake CPA. The
@@ -817,6 +1303,15 @@ broad gates rather than nothing.
 - **Refresh sequencing cannot be replaced by a poll-decision test.** A
   `shouldPoll()` unit test says nothing about whether the page serialises the pull
   before the reads, so the probe holds the response and observes the ordering.
+- **The copy path is split between a unit test and the browser.** Which route a copy
+  takes - the async Clipboard API, or the selection path a plain-HTTP origin needs -
+  is a decision over stubbed globals (`scripts/test-clipboard.ts`), including where a
+  dialog's focus trap requires the scratch element to be attached. Whether that
+  selection path puts the text on the clipboard is not: it needs a real document, so
+  the acceptance pastes the value back out of the browser's own paste pipeline from
+  inside a dialog and from a drawer, which are the containers that trap focus. That
+  context is granted no clipboard permission on purpose - granting it would stop the
+  acceptance from exercising the fallback at all.
 
 ### 11.2 Where the wall clock actually goes
 
@@ -919,7 +1414,147 @@ Two constraints keep the preparation step's shape:
   says nothing about the shared libraries.** That is why the OS dependencies are
   still guaranteed on every run, just by probe rather than unconditionally.
 
-## 12. Where to look next
+## 13. Demo mode
+
+A public demonstration has to show the product without a gateway behind it, without
+any credential, and without becoming a second frontend to maintain. Demo mode is
+that, expressed as a thin layer over the ordinary process: `OMCPA_DEMO_MODE=true`
+changes where the data comes from and refuses what must not happen, and nothing
+declares itself a demo at compile time.
+
+It is off unless it is asked for, and everything it changes is scoped to it, so the
+self-hosted path is byte-for-byte the same code (ADR 0016 records the decision and
+the alternatives).
+
+| Concern | Self-hosted | Demo |
+| --- | --- | --- |
+| Upstream | The configured CPA instance | `internal/demo`'s fixture, over a loopback socket, with a key minted per process |
+| Management key | `OMCPA_CPA_MANAGEMENT_KEY` | The fixture's own key; an inherited one is discarded, never encrypted into the instance row |
+| Database | `oh-my-cpa.db` under `OMCPA_DATA_DIR` | `oh-my-cpa-demo.db`, deleted and rebuilt on every boot |
+| Capture and sync | Collector and pricing loop run | Neither starts; the fixture is the history and the price list |
+| Sign-in | The CPA management key | A session on first sight, so a link can be opened by anyone |
+| Dangerous routes | Served | Refused by `internal/api/demo_policy.go` |
+
+### Why the upstream is a fixture rather than a separate adapter
+
+The console reads the gateway through `internal/cpa/management` in about twenty
+handlers. The cheapest way to keep all of them working - including the DTO
+allowlists, the credential projection and the model catalog resolution - is to keep
+the client and replace what is on the other end of it, so `internal/demo` serves the
+management API on a loopback port and the application is pointed at it exactly as it
+would be pointed at a real gateway. An adapter at the handler layer would have had
+to reproduce every response shape from Go structs and would have grown a branch in
+every handler that reads one.
+
+The fixture never dials the URL it is handed: it resolves the requested provider
+endpoint against its own catalogue and refuses anything else, which is what makes
+"the demonstration performs no outbound request" a property of the code rather than
+a promise about the environment. The URLs it answers are pinned to
+`internal/quota`'s allowlist by a test, so the duplication cannot drift into
+answering a request the console would never make.
+
+### The boundary is a classification, not a list of disabled buttons
+
+The server classifies every route it serves. `internal/api/demo_policy.go` holds one
+table of `method + chi pattern + verdict`, first match wins, and the test suite walks
+the **real** routing table asserting that every registered route is classified: an
+endpoint added without a verdict fails the suite rather than inheriting one. At
+runtime an unclassified route is refused, so the failure mode of a gap is a blocked
+feature.
+
+The table is ordered from the specific to the general, and the trailing wildcard
+that serves the SPA comes last. That ordering is load-bearing: while the wildcard
+sat first, it classified every `GET` in the application as public - including the
+credential download and the request log - and both were allowed.
+
+Last is not enough on its own, though. A wildcard that resolves before the refusal
+for an unclassified API path makes the coverage test unfalsifiable for reads: an
+unlisted `GET` matches the wildcard and looks classified. The fallback and the
+console are therefore separate lists, and the coverage test refuses a fallback match
+as a verdict - so a read endpoint added without one fails the suite, and is refused
+at runtime while it does.
+
+Refusals answer `403` with `{"error": ..., "code": "demo_operation_refused"}` - the
+code the facade's other failures already carry - plus `X-OMCPA-Demo-Blocked` for a
+caller that never parses a body. Reads are marked with `X-OMCPA-Demo: active`, and a
+write carries `X-OMCPA-Demo-Persistence: none`, which is how a response can say its
+result is not durable without the page having to know.
+
+The classification resolves in three passes - the endpoint verdicts, then the
+fallbacks, then the console itself - and the third exists because a trailing wildcard
+matches every path below it. That ordering is what keeps the SPA fallback from
+answering for an API path: `/api/v1/...` is refused by the fallback, while `/api-keys`
+is a page and stays public. Writing the coverage test against that arrangement found
+two reads - the gateway key list and the error-log file list - that had been matching
+the SPA wildcard, which is to say they were being served without anyone having decided
+they should be.
+
+What the demo refuses is whatever moves credential material, starts a real sign-in,
+executes a plugin, writes the gateway configuration, spends a quota entitlement,
+hands back a raw request or error log, or would leave the process - provider model
+reads, the pricing catalogue sync, the diagnostic bundle. What it performs instead
+are writes that stay inside this instance: credential metadata and the enabled state
+in the fixture, and client-key names, preferences, price rows, resource overrides and
+a discovery sweep in the database. A credential status edit and a preference edit are
+therefore stored in different places, and both are gone when the instance is replaced.
+
+### The fixture is seeded through the real write path
+
+`internal/demo` builds the history a deployment would have accumulated - about
+fourteen thousand requests over 371 days, rising towards the present, across fourteen
+traffic models and eight providers, with cached and reasoning tokens, latency and
+TTFT, a failure share, named caller keys and a price list - and writes it through
+`repository.InsertUsageEvents`, the same call the capture path uses. That is what keeps the fixture subject to the request-time price
+lock, the display-mask rules and the schema instead of drifting from them.
+
+The consequence is that the fabricated history needs the price version it is
+pretending existed: the price lock resolves a version by the request's own
+timestamp, and the trigger that shadows every price write stamps the moment of the
+write. `Repository.SeedModelPriceHistoryBackfill` is the one caller that writes a
+version at an explicit time, and it exists so the fixture can stay under the real
+lock rather than writing a cost column directly.
+
+The price list is seeded with the catalogue the pricing page resolves against,
+because a real deployment fills that catalogue from the gateway's own model list
+during a sync and the demo deliberately runs none. Without it the page would
+intersect its stored prices with an empty catalogue and render nothing.
+
+Seeding is also why the demo database is rebuilt on every boot. A platform that
+scales to zero brings the process back hours later; a database left behind would end
+its history hours ago, and the fifteen-minute and one-hour windows - the panels that
+make the console look alive - would be empty.
+
+### The capture state is reported, not faked
+
+The request list prints the capture state in its own header, and a demo has no
+collector to report on. Rather than render "capture disabled" over a page full of
+requests, the demo answers with the deployment its fixture describes - a
+subscribe-mode collector that last captured seconds ago - while every number that
+describes stored data is read from the database. A manual sync is answered the same
+way: it reports a pass that found an empty queue, which is what a real deployment
+answers when nothing arrived in between.
+
+### On the platform it is deployed to
+
+Vercel builds and routes to `Dockerfile.vercel` (declared in `vercel.json` as a
+container service behind a catch-all rewrite), which runs the same binary with the
+demo environment baked in: the console at the site root, data under `/tmp`, and the
+listening address following the platform's `PORT` at start-up. The only adaptation
+the platform needs is that entry point; everything else is the application's own.
+
+The session is issued on any unauthenticated request rather than only on the
+sign-in endpoint. That is not a boundary decision - the route policy is the
+boundary, and it refuses the same operations either way - but the platform runs
+several container instances behind one address, each with its own fixture key, so a
+cookie minted by one is invalid at the next. Refusing those reads would turn a
+working page into a sign-in card, because the console issues its first queries in
+parallel with the session check.
+
+`docs/ops/vercel-demo.md` is the deployment runbook: what the repository provides,
+the account-level steps no command can perform, and the failure modes that look like
+something else.
+
+## 14. Where to look next
 
 - Domain wording: `CONTEXT.md`
 - Deployment and its trade-offs: `docs/adr/0001-go-react-sqlite-modular-monolith.md`

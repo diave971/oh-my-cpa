@@ -239,7 +239,9 @@
      the expanded state from clipping controls before the collapse transition. */
   max-height: 1200px;
   opacity: 1;
-  transition: max-height 260ms cubic-bezier(0.2, 0, 0, 1), opacity 200ms ease, margin 260ms ease;
+  transition: max-height var(--motion-base) var(--ease-standard),
+              opacity var(--motion-base) var(--ease-standard),
+              margin var(--motion-base) var(--ease-standard);
 }
 .request-collapsible-header.is-collapsed {
   max-height: 0;
@@ -306,11 +308,11 @@
   outline: none;
   /* Compositor-only: the entry is a fade and a short rise, which the engine can
      run without laying anything out. */
-  animation: reqBackTopEnter 220ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
-  transition: transform 180ms cubic-bezier(0.16, 1, 0.3, 1),
-              background-color 150ms ease,
-              border-color 150ms ease,
-              color 150ms ease;
+  animation: reqBackTopEnter var(--motion-base) var(--ease-standard) forwards;
+  transition: transform var(--motion-fast) var(--ease-standard),
+              background-color var(--motion-fast),
+              border-color var(--motion-fast),
+              color var(--motion-fast);
 }
 
 @keyframes reqBackTopEnter {
@@ -350,7 +352,7 @@
 .req-back-to-top-btn .anticon {
   font-size: 12px;
   color: var(--accent);
-  transition: transform 180ms ease;
+  transition: transform var(--motion-fast) var(--ease-standard);
 }
 
 .req-back-to-top-btn:hover .anticon {
@@ -472,7 +474,7 @@
   height: 16px;
   background: transparent;
   border-radius: 0;
-  transition: background var(--motion-fast, 50ms) ease;
+  transition: background var(--motion-fast) ease;
 }
 
 .req-col-resizer:hover::after,
@@ -541,7 +543,7 @@
   cursor: pointer;
   font-size: 12px;
   position: relative;
-  transition: background var(--motion-fast, 50ms) ease;
+  transition: background var(--motion-fast) ease;
 }
 
 .request-row:hover {
@@ -628,7 +630,7 @@
   opacity: 0;
   color: var(--muted);
   cursor: pointer;
-  transition: opacity var(--motion-fast, 50ms) ease, color var(--motion-fast, 50ms) ease;
+  transition: opacity var(--motion-fast) ease, color var(--motion-fast) ease;
   display: inline-flex;
   align-items: center;
   padding: 1px 3px;
@@ -742,6 +744,18 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The upstream credential that answered the request, masked the same way the key
+   list masks a caller key: monospace so its head and tail line up between rows,
+   and the metadata colour so it reads as an annotation on the provider name
+   rather than as a second title. */
+.req-provider-key {
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--meta);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* Column 4: Model name with reasoning effort beneath */
 .req-col-model {
@@ -796,7 +810,7 @@
   font-size: 11px;
   cursor: help;
   flex-shrink: 0;
-  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  transition: background-color var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast);
 }
 .req-non-stream-icon:hover {
   background: color-mix(in srgb, var(--muted) 16%, transparent);
@@ -1003,6 +1017,14 @@
   font-size: 11px;
 }
 
+/* The row layout is chosen by the *list's* width, not by the device's.
+
+   A container query rather than a viewport breakpoint, and deliberately so: this list sits
+   inside the page's content column, so a 1440px viewport with a collapsed rail and a wide
+   card holds a different list width than the same viewport with the rail open. The
+   question "do ten columns still fit" is about the box the columns are in, and only the
+   container can answer it. It is therefore the one threshold in the console that is not a
+   viewport one, alongside the shell's 900px and the phone's 640px (docs/design.md §8). */
 @container reqstream (max-width: 920px) {
   .request-table-scroll-area {
     overflow-x: visible;
@@ -1042,44 +1064,6 @@
   }
 }
 
-@media (max-width: 920px) {
-  .request-table-scroll-area {
-    overflow-x: visible;
-  }
-  .request-table-header {
-    display: none;
-  }
-  .request-list-host {
-    min-width: 100%;
-  }
-  .req-mobile-label {
-    display: block;
-  }
-  .request-row {
-    display: flex;
-    flex-direction: column;
-    align-items: stretch;
-    gap: 10px;
-    padding: 14px 16px;
-    width: 100%;
-    min-width: 100%;
-    min-height: auto;
-  }
-  .req-col {
-    width: 100%;
-  }
-  .req-col-latency,
-  .req-col-tps,
-  .req-col-tokens,
-  .req-col-cost,
-  .req-col-cache {
-    align-items: flex-start;
-    text-align: left;
-  }
-  .request-chevron {
-    display: none;
-  }
-}
 .request-group-title {
   display: flex;
   justify-content: space-between;
@@ -1435,7 +1419,9 @@
 .request-detail-empty {
   padding: 28px 0;
 }
-@media (max-width: 600px) {
+/* The phone refinements, at the console's phone breakpoint rather than a third number of their
+   own (docs/design.md §8). The band between 600 and 640 used to get none of them. */
+@media (max-width: 640px) {
   .request-events-page {
     padding: 20px 12px 16px;
     gap: 14px;
@@ -1502,3 +1488,43 @@
 
 
 
+
+/* ── touch devices ───────────────────────────────────────────────────────────
+   Two rules that belong to this list rather than to the console, because both are
+   about controls this file draws. The console-wide touch rules are in `index.css`. */
+
+/* A finger cannot produce a hover, so the quick-copy control is always drawn where
+   hovering is not an option. It is the only way to take a request id in hand, and it
+   was previously reachable only from a pointer. */
+@media (hover: none) {
+  .req-id-quick-copy { opacity: .55; }
+}
+
+@media (pointer: coarse) {
+  .req-id-quick-copy { position: relative; }
+  .req-id-quick-copy::before {
+    content: '';
+    position: absolute;
+    inset: -4px;
+  }
+
+  /* The column header is already `display: none` below 920px, so this is the tablet and
+     touch-laptop case: a drag near a header edge means "scroll this list", never "resize
+     this column". The handle also sets `touch-action: none`, which would eat the scroll
+     outright rather than merely misinterpret it. */
+  .req-col-resizer { display: none; }
+}
+
+/* ── reduced motion ─────────────────────────────────────────────────────────
+   §7's override is a promise this file has to keep for itself: the back-to-top
+   affordance rises into place and the filter header folds and unfolds, and a
+   reader who asked for less movement should get the state where it lands. The
+   kill is on movement - a keyframe's transform, a disclosure's height - and the
+   colour hints are left alone, because at the fast token they are three frames
+   rather than motion. `index.css` splits the heatmap mark the same way. */
+@media (prefers-reduced-motion: reduce) {
+  .req-back-to-top-btn { animation: none; }
+  .req-back-to-top-btn,
+  .req-back-to-top-btn .anticon,
+  .request-collapsible-header { transition: none; }
+}

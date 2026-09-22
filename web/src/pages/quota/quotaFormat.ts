@@ -4,7 +4,7 @@ const pad2 = (n: number): string => (n < 10 ? `0${n}` : String(n));
 
 /**
  * Short absolute time used across the quota card, e.g. "09/30 01:05".
- * Numeric and locale-neutral on purpose so zh/en share one layout.
+ * Numeric and locale-neutral on purpose so every language shares one layout.
  */
 export function formatShortDateTime(ms: number): string {
   const d = new Date(ms);
@@ -47,6 +47,17 @@ export function formatTimeWithCountdown(targetMS: number, nowMS: number, t: TFun
   const date = formatShortDateTime(targetMS);
   const countdown = formatCountdown(targetMS, nowMS, t);
   return countdown ? `${date} · ${countdown}` : date;
+}
+
+/**
+ * Renewal cell for a plan whose expiry came from the credential's id_token
+ * rather than a live subscription read. Upstream only ever moves that window
+ * forward, so the recorded instant is a lower bound of the real expiry: it is
+ * marked "≥" with its provenance and never given a countdown, which would read
+ * as a verified deadline.
+ */
+export function formatSnapshotRenewalBound(targetMS: number): string {
+  return `≥ ${formatShortDateTime(targetMS)}`;
 }
 
 /** Relative "x minutes ago" / "x hours ago" for observation timestamps. */

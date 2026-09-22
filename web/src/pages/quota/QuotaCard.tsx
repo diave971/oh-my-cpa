@@ -9,20 +9,24 @@ import {
   WarningOutlined,
   CloseCircleOutlined,
 } from '@ant-design/icons';
-import { LobeIcon, getProviderDefaultIcon } from '../../components/LobeIcon';
-import { getCredentialProviderMetadata } from '../../components/common/providerMetadata';
+import { credentialProviderIconId } from '../../components/common/providerMetadata';
+import { ProviderBrandIcon } from '../../components/LobeIcon';
 import { useT } from '../../i18n';
 import type { QuotaItem } from '../../types/quota';
+import { isDemoMode } from '../../types/demoMode';
 import { QuotaProgressBar } from './QuotaProgressBar';
 import {
   formatGmtOffsetLabel,
   formatObservedAgo,
+  formatSnapshotRenewalBound,
   formatTimeWithCountdown,
 } from './quotaFormat';
 import styles from './QuotaPage.module.css';
 
 interface QuotaCardProps {
   item: QuotaItem;
+  /** Logo published by the plugin that registers this provider, when it has one. */
+  pluginLogo?: string;
   isRefreshing?: boolean;
   onRefresh: (authIndex: string) => void;
   onClearCooldown: (authIndex: string) => void;
@@ -31,16 +35,19 @@ interface QuotaCardProps {
 
 export const QuotaCard: React.FC<QuotaCardProps> = ({
   item,
+  pluginLogo,
   isRefreshing,
   onRefresh,
   onClearCooldown,
   onRedeemCredit,
 }) => {
   const t = useT();
+  // Redeeming a reset credit spends a real entitlement and clearing a cooldown changes a
+  // credential's state; the demonstration refuses both, so neither is offered.
+  const isDemo = isDemoMode();
   const nowMS = useVisibleNow();
 
-  const meta = getCredentialProviderMetadata(item.provider);
-  const iconId = meta.iconId || getProviderDefaultIcon(item.provider, item.name);
+  const iconId = credentialProviderIconId(item.provider, item.name);
 
   const renderStatus = () => {
     if (item.active_cooldown?.is_active) {
@@ -100,6 +107,11 @@ export const QuotaCard: React.FC<QuotaCardProps> = ({
   const creditSupported = item.capabilities.reset_credit_supported;
   const canRedeem = creditSupported && availableCredits > 0 && !item.disabled;
 
+  // A snapshot-sourced expiry is a lower bound on the real renewal instant, so
+  // it must not be presented as a verified date. Legacy snapshots carry no
+  // provenance and keep the previous rendering.
+  const isSnapshotBound = item.plan?.expires_source === 'credential_snapshot';
+
   const creditRows = (item.reset_credits?.credits ?? [])
     .filter((c) => c.expires_at_ms)
     .sort((a, b) => (a.expires_at_ms ?? 0) - (b.expires_at_ms ?? 0));
@@ -139,7 +151,7 @@ export const QuotaCard: React.FC<QuotaCardProps> = ({
       <div className={styles['card-head']}>
         <div className={styles['card-title-wrap']}>
           <div className={styles['card-icon']}>
-            <LobeIcon iconId={iconId} size={20} />
+            <ProviderBrandIcon iconId={iconId} logo={pluginLogo} size={20} />
           </div>
           <div className={styles['card-name-block']}>
             <div className={styles['card-name']} title={item.name}>
@@ -164,11 +176,33 @@ export const QuotaCard: React.FC<QuotaCardProps> = ({
             </span>
           )}
           {item.plan?.expires_at_ms && (
-            <span className={styles['meta-item']}>
+            <span
+              className={styles['meta-item']}
+              data-renewal-source={item.plan.expires_source ?? 'unknown'}
+            >
               <span className={styles['meta-label']}>{t('quota.col_renewal')}</span>
               <span className={styles['meta-value']}>
-                {formatTimeWithCountdown(item.plan.expires_at_ms, nowMS, t)}
+                {isSnapshotBound
+                  ? formatSnapshotRenewalBound(item.plan.expires_at_ms)
+                  : formatTimeWithCountdown(item.plan.expires_at_ms, nowMS, t)}
               </span>
+              {isSnapshotBound && (
+                <span
+                  className={styles['meta-tag']}
+                  title={t('quota.renewal_snapshot_hint')}
+                >
+                  {t('quota.renewal_snapshot')}
+                </span>
+              )}
+              {item.plan.auto_renews === false && (
+                <span
+                  className={styles['meta-tag']}
+                  data-renewal-not-renewing="true"
+                  title={t('quota.renewal_not_renewing_hint')}
+                >
+                  {t('quota.renewal_not_renewing')}
+                </span>
+              )}
             </span>
           )}
           {item.reset_credits && (
@@ -195,6 +229,8 @@ export const QuotaCard: React.FC<QuotaCardProps> = ({
           <Button
             size="small"
             danger
+            disabled={isDemo}
+            title={isDemo ? t('demo.blocked') : undefined}
             onClick={() => onClearCooldown(item.auth_index)}
           >
             {t('quota.clear_cooldown')}
@@ -255,6 +291,8 @@ export const QuotaCard: React.FC<QuotaCardProps> = ({
               <Button
                 size="small"
                 icon={<ThunderboltOutlined />}
+                disabled={isDemo}
+                title={isDemo ? t('demo.blocked') : undefined}
               >
                 {t('quota.btn_reset_quota')}
               </Button>

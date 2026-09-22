@@ -82,6 +82,10 @@ type managementOverviewCredential struct {
 type managementOverviewTypeCount struct {
 	Type  string `json:"type"`
 	Count int    `json:"count"`
+	// Disabled is how many of Count the gateway currently reports disabled. A
+	// surface needs it to tell a channel switched off wholesale from one whose
+	// remaining credentials still serve, which the total alone cannot say.
+	Disabled int `json:"disabled"`
 }
 
 // managementOverview returns a safe, read-only aggregation of the CPA
@@ -277,6 +281,7 @@ func countConfiguredKeys(raw map[string]any) (managementKeys, providerKeys int) 
 		"xai-api-key",
 		"claude-api-key",
 		"vertex-api-key",
+		"meta-api-key",
 	} {
 		providerKeys += arrayLength(raw[section])
 	}
@@ -303,14 +308,19 @@ func buildCredentialHealth(files []management.AuthFile) *managementOverviewCrede
 		ByType: []managementOverviewTypeCount{},
 	}
 	counts := make(map[string]int)
+	disabledCounts := make(map[string]int)
 	for _, file := range files {
-		if file.Disabled {
+		provider := overviewProviderID(file.Type, file.Provider)
+		// The per-type tally counts every file, disabled ones included, so it
+		// stays the same number the channel's credential count has always been.
+		counts[provider]++
+		switch {
+		case file.Disabled:
 			result.Disabled++
-		} else if file.Unavailable {
+			disabledCounts[provider]++
+		case file.Unavailable:
 			result.Unavailable++
 		}
-		provider := overviewProviderID(file.Type, file.Provider)
-		counts[provider]++
 	}
 	result.Total = len(files)
 	result.Active = result.Total - result.Disabled - result.Unavailable
@@ -318,7 +328,11 @@ func buildCredentialHealth(files []management.AuthFile) *managementOverviewCrede
 		result.Active = 0
 	}
 	for provider, count := range counts {
-		result.ByType = append(result.ByType, managementOverviewTypeCount{Type: provider, Count: count})
+		result.ByType = append(result.ByType, managementOverviewTypeCount{
+			Type:     provider,
+			Count:    count,
+			Disabled: disabledCounts[provider],
+		})
 	}
 	sort.Slice(result.ByType, func(i, j int) bool {
 		if result.ByType[i].Count != result.ByType[j].Count {
@@ -332,6 +346,9 @@ func buildCredentialHealth(files []management.AuthFile) *managementOverviewCrede
 func overviewProviderID(values ...string) string {
 	for _, value := range values {
 		if normalized := strings.ToLower(strings.TrimSpace(value)); normalized != "" && normalized != "empty" {
+			if strings.HasPrefix(normalized, management.OpenAICompatibilityLabelPrefix) {
+				return strings.TrimPrefix(normalized, management.OpenAICompatibilityLabelPrefix)
+			}
 			return normalized
 		}
 	}

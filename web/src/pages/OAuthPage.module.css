@@ -48,11 +48,15 @@
   border-radius: var(--radius-sm, 4px);
   padding: 18px 22px;
   box-shadow: none;
-  transition: border-color var(--motion-base) var(--ease-standard);
+  transition: border-color var(--motion-fast) var(--ease-standard);
 }
 
 .card:hover {
   border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+
+.card-target-highlight {
+  border-color: var(--accent) !important;
 }
 
 .card-header {
@@ -203,6 +207,20 @@
   margin-top: 4px;
 }
 
+/* The device grant's short code is what the operator types on the vendor page,
+   so it is set in the monospace face the console uses for identifiers. */
+.device-code-value {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 4px);
+  background: var(--surface);
+  user-select: all;
+}
+
 .status-row {
   display: flex;
   align-items: center;
@@ -298,6 +316,14 @@
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* Cancellation failures are the one outcome the card reports without leaving
+   the waiting state, so they need to sit next to the status rather than
+   replacing it. */
+.cancel-error-text {
+  font-size: 12px;
+  max-width: 320px;
 }
 
 .loading-center {

@@ -10,9 +10,14 @@ import {
 } from '@ant-design/icons';
 import { keepPreviousData, useMutation, useQuery } from '@tanstack/react-query';
 import dayjs from 'dayjs';
+import type { ColumnsType } from 'antd/es/table';
 import { api, apiErrorCode, ApiError } from '../api/client';
 import { useT } from '../i18n';
+import { isDemoMode } from '../types/demoMode';
 import { useLogTail } from '../hooks/useLogTail';
+import { useIsPhoneViewport } from '../hooks/useIsPhoneViewport';
+import { PhoneRow } from '../components/common/PhoneRow';
+import { phoneRowFields, renderedCell } from '../components/common/phoneRowFields';
 import { usePreference } from '../hooks/usePreference';
 import {
   DEFAULT_LOG_FILTERS,
@@ -36,8 +41,8 @@ const { Text } = Typography;
 const RENDER_CHUNK = 300;
 
 // Status classes are shown as the numeric class, not as invented English words:
-// the log line itself says 400, and a Chinese UI must not caption it SUCCESS
-// (design.md rule 3).
+// the log line itself says 400, and a localized UI must not caption it SUCCESS
+// under a different reading language (design.md rule 3).
 const STATUS_CLASS_LABELS: Record<LogStatusClass, string> = {
   all: '',
   success: '2xx',
@@ -91,6 +96,7 @@ const LogRow: React.FC<LogRowProps> = ({ parts }) => {
 
 const ErrorLogFiles: React.FC = () => {
   const t = useT();
+  const isDemo = isDemoMode();
   const { message } = AntdApp.useApp();
   const query = useQuery({
     queryKey: ['request-error-logs'],
@@ -99,6 +105,9 @@ const ErrorLogFiles: React.FC = () => {
     staleTime: 10000,
     placeholderData: keepPreviousData,
   });
+
+  // Read above the early returns, because a hook cannot come after one.
+  const isPhone = useIsPhoneViewport();
 
   if (query.isPending) return <div className="log-files-state">{t('logs.loading')}</div>;
   if (query.isError) {
@@ -114,13 +123,7 @@ const ErrorLogFiles: React.FC = () => {
   if (query.data.files.length === 0) {
     return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('logs.errors_empty')} />;
   }
-  return (
-    <Table<ErrorLogFile>
-      size="small"
-      rowKey="name"
-      dataSource={query.data.files}
-      pagination={false}
-      columns={[
+  const columns: ColumnsType<ErrorLogFile> = [
         { title: t('logs.file_name'), dataIndex: 'name', key: 'name', ellipsis: true },
         {
           title: t('logs.file_size'),
@@ -146,6 +149,10 @@ const ErrorLogFiles: React.FC = () => {
               type="text"
               icon={<DownloadOutlined />}
               aria-label={`${t('logs.download')} ${file.name}`}
+              // An error log quotes request content, so the demonstration does not hand
+              // one back at all; the server refuses the download too.
+              disabled={isDemo}
+              title={isDemo ? t('demo.blocked') : undefined}
               onClick={async () => {
                 try {
                   const blob = await api.downloadRequestErrorLog(file.name);
@@ -162,13 +169,40 @@ const ErrorLogFiles: React.FC = () => {
             />
           ),
         },
-      ]}
+  ];
+
+  // Below 640px one file per row (ADR 0012): the file name is the headline, the size and the
+  // modified time are labelled fields, and the download control gets its own line. The columns are
+  // one description of a file, so the table and the row cannot disagree about what one shows.
+  if (isPhone) {
+    return (
+      <div>
+        {query.data.files.map((file, index) => (
+          <PhoneRow
+            key={file.name}
+            identity={renderedCell(columns, 'name', file, index)}
+            fields={phoneRowFields(columns, file, { skip: ['name', 'actions'], index })}
+            actions={renderedCell(columns, 'actions', file, index)}
+          />
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <Table<ErrorLogFile>
+      size="small"
+      rowKey="name"
+      dataSource={query.data.files}
+      pagination={false}
+      columns={columns}
     />
   );
 };
 
 export const LogsPage: React.FC = () => {
   const t = useT();
+  const isDemo = isDemoMode();
   const { message } = AntdApp.useApp();
   const { value: filters, ready: filtersReady, set: setFilters } = usePreference<LogFilters>(
     LOG_FILTERS_PREFERENCE,
@@ -287,8 +321,14 @@ export const LogsPage: React.FC = () => {
               <Button size="small" onClick={() => setConfirmClear(false)}>{t('common.cancel')}</Button>
             </Space>
           ) : (
-            <Tooltip title={t('logs.clear_hint')}>
-              <Button size="small" icon={<ClearOutlined />} onClick={() => setConfirmClear(true)} aria-label={t('logs.clear')} />
+            <Tooltip title={isDemo ? t('demo.blocked') : t('logs.clear_hint')}>
+              <Button
+                size="small"
+                icon={<ClearOutlined />}
+                disabled={isDemo}
+                onClick={() => setConfirmClear(true)}
+                aria-label={t('logs.clear')}
+              />
             </Tooltip>
           )}
         </Space>

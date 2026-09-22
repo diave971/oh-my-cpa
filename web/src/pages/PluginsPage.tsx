@@ -1,13 +1,14 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   Card,
+  Pagination,
+  Spin,
   Table,
   Tag,
   Button,
   Switch,
   Alert,
   Modal,
-  Input,
   Popconfirm,
   App as AntdApp,
 } from 'antd';
@@ -24,16 +25,31 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, ApiError } from '../api/client';
 import { useT } from '../i18n';
+import { isDemoMode } from '../types/demoMode';
 import type { PluginItem } from '../types/plugin';
+import { PluginConfigEditor } from '../components/plugins/PluginConfigEditor';
+import { parsePluginConfig, pluginConfigsEqual } from '../components/plugins/pluginConfig';
+
+/** One page of the list, shared by both renderings so a page means the same thing at either width. */
+const PAGE_SIZE = 20;
+import { useOverlayHistory } from '../hooks/useOverlayHistory';
+import { useIsPhoneViewport } from '../hooks/useIsPhoneViewport';
+import { PhoneRow } from '../components/common/PhoneRow';
+import { phoneRowFields, renderedCell } from '../components/common/phoneRowFields';
 
 export const PluginsPage: React.FC = () => {
   const t = useT();
   const navigate = useNavigate();
-  const { message } = AntdApp.useApp();
+  const { message, modal } = AntdApp.useApp();
   const queryClient = useQueryClient();
 
   const [configModalPlugin, setConfigModalPlugin] = useState<PluginItem | null>(null);
+  // The phone rendering pages in React, because it is not a Table and antd's own paging lives
+  // inside the Table. Only one of the two renderings is mounted, so there is never a second page
+  // number the reader could be on.
+  const [phonePage, setPhonePage] = useState(1);
   const [configText, setConfigText] = useState<string>('');
+  const parsedConfig = useMemo(() => parsePluginConfig(configText), [configText]);
 
   const {
     data: pluginsData,
@@ -91,23 +107,53 @@ export const PluginsPage: React.FC = () => {
   });
 
   const handleOpenConfig = (plugin: PluginItem) => {
+    const text = JSON.stringify(plugin.config || {}, null, 2);
     setConfigModalPlugin(plugin);
-    setConfigText(JSON.stringify(plugin.config || {}, null, 2));
+    setConfigText(text);
   };
 
   const handleSaveConfig = () => {
     if (!configModalPlugin) return;
-    try {
-      const parsed = JSON.parse(configText);
-      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-        message.error(t('plg.config_invalid_json'));
-        return;
-      }
-      configMutation.mutate({ id: configModalPlugin.id, config: parsed as Record<string, unknown> });
-    } catch {
-      message.error(t('plg.config_invalid_json'));
+    if (!parsedConfig.value) {
+      message.error(parsedConfig.error === 'duplicate-key'
+        ? t('plg.config_duplicate_key_desc')
+        : t('plg.config_invalid_json'));
+      return;
     }
+    configMutation.mutate({ id: configModalPlugin.id, config: parsedConfig.value });
   };
+
+  // The config dialog refuses to close while an edit is in progress, which the hook handles:
+  // a refused close re-arms its sentinel rather than letting the next Back leave the page.
+  const handleCloseConfig = () => {
+    if (!configModalPlugin || pluginConfigsEqual(parsedConfig.value, configModalPlugin.config ?? {})) {
+      setConfigModalPlugin(null);
+      return;
+    }
+    modal.confirm({
+      title: t('plg.config_unsaved_title'),
+      content: t('plg.config_unsaved_desc'),
+      okText: t('common.confirm'),
+      cancelText: t('common.cancel'),
+      okButtonProps: { danger: true },
+      onOk: () => setConfigModalPlugin(null),
+    });
+  };
+
+  // The dialog refuses to close while an edit is in progress, which the hook handles: a refused
+  // close re-arms its sentinel instead of letting the next Back press leave the page under an
+  // open editor.
+  useOverlayHistory({ isOpen: configModalPlugin !== null, onClose: handleCloseConfig });
+
+  const isPhone = useIsPhoneViewport();
+  // Clamped rather than trusted: removing or installing a plugin changes the page count, and a
+  // page past the end would render an empty list with no way back.
+  const lastPhonePage = Math.max(1, Math.ceil(plugins.length / PAGE_SIZE));
+  const safePhonePage = Math.min(phonePage, lastPhonePage);
+  const pagedPlugins = useMemo(
+    () => plugins.slice((safePhonePage - 1) * PAGE_SIZE, safePhonePage * PAGE_SIZE),
+    [plugins, safePhonePage],
+  );
 
   const columns: ColumnsType<PluginItem> = [
     {
@@ -169,7 +215,11 @@ export const PluginsPage: React.FC = () => {
             size="small"
             checked={r.enabled}
             loading={statusMutation.isPending && statusMutation.variables?.id === r.id}
+            // A plugin executes inside the gateway, so enabling or disabling one is not
+            // a setting the demonstration can honour: the server refuses it.
+            disabled={isDemo}
             onChange={(checked) => statusMutation.mutate({ id: r.id, enabled: checked })}
+            aria-label={`${t('plg.col_status')}: ${r.name}`}
           />
           <Tag color={r.enabled ? 'success' : 'default'} style={{ margin: 0 }}>
             {r.enabled ? t('plg.status_enabled') : t('plg.status_disabled')}
@@ -187,7 +237,10 @@ export const PluginsPage: React.FC = () => {
           <Button
             size="small"
             icon={<SettingOutlined />}
+            disabled={isDemo}
             onClick={() => handleOpenConfig(r)}
+            aria-label={`${t('plg.config_title', { name: r.name })}`}
+            title={t('plg.config_title', { name: r.name })}
           />
           <Popconfirm
             title={t('plg.delete_confirm')}
@@ -199,13 +252,18 @@ export const PluginsPage: React.FC = () => {
               size="small"
               danger
               icon={<DeleteOutlined />}
+              disabled={isDemo}
               loading={deleteMutation.isPending && deleteMutation.variables === r.id}
+              aria-label={`${t('common.delete')}: ${r.name}`}
+              title={`${t('common.delete')}: ${r.name}`}
             />
           </Popconfirm>
         </div>
       ),
     },
   ];
+
+  const isDemo = isDemoMode();
 
   return (
     <div className="terminal-page plugins-page">
@@ -251,16 +309,56 @@ export const PluginsPage: React.FC = () => {
       )}
 
       <Card>
-        <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
-          <Table
-            columns={columns}
-            dataSource={plugins}
-            rowKey="id"
-            loading={isLoading}
-            pagination={{ pageSize: 20, showSizeChanger: false }}
-            locale={{ emptyText: t('plg.empty') }}
-          />
-        </div>
+        {isPhone ? (
+          /* Loading before emptiness: the empty copy is a claim about the gateway, and it is not
+             true while the first read is still in flight. */
+          isLoading && plugins.length === 0 ? (
+            <div className="phone-list-loading">
+              <Spin />
+            </div>
+          ) : plugins.length === 0 ? (
+            /* A blocked read is not an empty plugin list: with no cached rows the error alert above is
+               the only true thing on the page. */
+            isError && !pluginsData ? null : <p className="empty-copy">{t('plg.empty')}</p>
+          ) : (
+            <>
+              {pagedPlugins.map((plugin, index) => (
+                <PhoneRow
+                  key={plugin.id}
+                  identity={renderedCell(columns, 'name', plugin, index)}
+                  fields={phoneRowFields(columns, plugin, { skip: ['name', 'status', 'actions'], index })}
+                  /* The status column draws the switch *and* its label, so the whole cell is the
+                     control strip: the row cannot show a state the switch disagrees with. */
+                  actions={
+                    <>
+                      {renderedCell(columns, 'status', plugin, index)}
+                      {renderedCell(columns, 'actions', plugin, index)}
+                    </>
+                  }
+                />
+              ))}
+              <Pagination
+                size="small"
+                simple
+                current={safePhonePage}
+                pageSize={PAGE_SIZE}
+                total={plugins.length}
+                onChange={setPhonePage}
+              />
+            </>
+          )
+        ) : (
+          <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
+            <Table
+              columns={columns}
+              dataSource={plugins}
+              rowKey="id"
+              loading={isLoading}
+              pagination={{ pageSize: PAGE_SIZE, showSizeChanger: false }}
+              locale={{ emptyText: t('plg.empty') }}
+            />
+          </div>
+        )}
       </Card>
 
       {/* Config Edit Modal */}
@@ -268,20 +366,13 @@ export const PluginsPage: React.FC = () => {
         title={t('plg.config_title', { name: configModalPlugin?.name || '' })}
         open={!!configModalPlugin}
         onOk={handleSaveConfig}
-        onCancel={() => setConfigModalPlugin(null)}
+        onCancel={handleCloseConfig}
         confirmLoading={configMutation.isPending}
+        okButtonProps={{ disabled: !parsedConfig.value }}
         okText={t('common.confirm')}
         cancelText={t('common.cancel')}
       >
-        <p style={{ fontSize: 13, color: 'var(--meta)' }}>
-          {t('plg.config_json_desc')}
-        </p>
-        <Input.TextArea
-          rows={10}
-          value={configText}
-          onChange={(e) => setConfigText(e.target.value)}
-          style={{ fontFamily: 'monospace', fontSize: 12 }}
-        />
+        <PluginConfigEditor value={configText} onChange={setConfigText} pluginName={configModalPlugin?.name || ''} />
       </Modal>
     </div>
   );

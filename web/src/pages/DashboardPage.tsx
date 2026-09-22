@@ -1,7 +1,7 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Alert, Button, Card, Empty, Skeleton, Space, Tooltip, Typography } from 'antd';
-import { HistoryOutlined, QuestionCircleOutlined, ReloadOutlined, RightOutlined } from '@ant-design/icons';
+import { Alert, Button, Card, Empty, Select, Skeleton, Space, Tooltip, Typography } from 'antd';
+import { HistoryOutlined, KeyOutlined, QuestionCircleOutlined, ReloadOutlined, RightOutlined } from '@ant-design/icons';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import { api, ApiError } from '../api/client';
@@ -9,14 +9,25 @@ import { useT } from '../i18n';
 import { usePreference } from '../hooks/usePreference';
 import { type ChartTone } from '../charts/chartTheme';
 import { type DashboardTrendChartProps } from '../charts/DashboardTrendChart';
-import { formatCacheRate } from '../theme/cacheScale';
+import { maskKeyText } from '../utils/maskKey';
+import { resolveCacheRateReadout } from '../theme/cacheScale';
 import { useTokenDisplayStyle } from '../types/tokenDisplayContext';
-import { formatTokens as formatTokensStyled, formatTokensFull } from '../types/tokenDisplay';
-import { successRateVerdict } from '../types/usageEventView';
+import {
+  formatTokenRate,
+  formatTokens as formatTokensStyled,
+  formatTokensFull,
+  resolveCountFlowReadout,
+  resolveTokenFlowReadout,
+  resolveTokenRateFlowReadout,
+} from '../types/tokenDisplay';
+import type { RollingReadout } from '../types/rollingNumber';
+import { successRateTone } from '../types/usageEventMetrics';
 import { TimeRangeControl } from '../components/dashboard/TimeRangeControl';
+import { RollingNumber } from '../components/dashboard/RollingNumber';
 import { TokenHeatmap, TOKEN_HEATMAP_QUERY_KEY } from '../components/dashboard/TokenHeatmap';
 import { ModelUsagePanels, DASHBOARD_MODELS_QUERY_KEY } from '../components/dashboard/ModelUsagePanels';
-import type { ManagementOverview, ManagementOverviewProvider } from '../types/management';
+import { DashboardProviders } from '../components/dashboard/DashboardProviders';
+import type { ManagementOverview } from '../types/management';
 import {
   applyTail,
   DASHBOARD_RANGE_PREFERENCE,
@@ -25,13 +36,13 @@ import {
   isSlidingRange,
   livePollInterval,
   parseDashboardRange,
+  costNoteKey,
   type DashboardRange,
   type DashboardResponse,
 } from '../types/dashboard';
 
 const { Text, Title } = Typography;
 
-const COMPACT_NUMBER_FORMAT = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 2 });
 const PLAIN_NUMBER_FORMAT = new Intl.NumberFormat('en');
 
 function formatCount(value: number | null | undefined): string {
@@ -39,14 +50,24 @@ function formatCount(value: number | null | undefined): string {
   return PLAIN_NUMBER_FORMAT.format(value);
 }
 
-function formatCompact(value: number | null | undefined): string {
-  if (value === null || value === undefined) return '—';
-  return COMPACT_NUMBER_FORMAT.format(value);
-}
-
 function formatRate(value: number | null | undefined): string {
   if (value === null || value === undefined) return '—';
   return `${value.toFixed(2)}%`;
+}
+
+/**
+ * The spend tile's own reading: two decimals.
+ *
+ * `formatCost` keeps four because a list row's fraction of a cent has to stay
+ * visible; a headline amount reads as money at two.
+ */
+function resolveTileCostReadout(cost: number): RollingReadout {
+  return {
+    number: cost,
+    prefix: '$',
+    suffix: '',
+    format: { minimumFractionDigits: 2, maximumFractionDigits: 2 },
+  };
 }
 
 const LazyDashboardTrendChart = React.lazy(() =>
@@ -68,14 +89,14 @@ const Pip: React.FC<{ tone: ChartTone }> = ({ tone }) => (
 /**
  * rateTone gives the tile's only pip something to mean.
  *
- * design.md reserves green/amber/red for real state, so one pip per verdict. The
- * bands come from `successRateVerdict` so the dashboard and the request list can
- * never disagree about the same window, and they are wide on purpose: a gateway
- * fanning out to several upstreams always carries some 429/timeout noise, and
- * painting that amber is how an indicator trains its reader to ignore it.
+ * design.md reserves green/amber/red for real state, so one pip per verdict, and the band comes
+ * from `successRateTone` - the console's single published rate rule, which the dashboard's provider
+ * rows read too. 80% or better is a gateway serving well enough not to need a look, 50-80% is
+ * degraded, below that is broken, and a window with no traffic carries no verdict at all rather
+ * than reading as a fault. See docs/design.md §Status pip semantics.
  */
-function rateTone(total: number, failed: number): ChartTone {
-  return successRateVerdict(total, failed);
+function rateTone(successRate: number | null | undefined): ChartTone {
+  return successRateTone(successRate);
 }
 
 
@@ -97,7 +118,46 @@ export const DashboardPage: React.FC = () => {
     parseDashboardRange,
   );
 
-  const query = dashboardRangeParams(range);
+  const [selectedApiKey, setSelectedApiKey] = React.useState<string | undefined>(undefined);
+
+  const keysQuery = useQuery({
+    // The masked list: this picker labels a key by its name or its mask, so it has no
+    // use for the value, and it keeps the bare query key the key page deliberately does
+    // not share - that page opts into the values and must not read a masked entry.
+    queryKey: ['management-client-keys'],
+    queryFn: () => api.getClientAPIKeys(),
+    staleTime: 60_000,
+  });
+
+  const clientKeyOptions = React.useMemo(() => {
+    return (keysQuery.data?.keys ?? [])
+      .filter((k) => Boolean(k.usage_fingerprint))
+      .map((k) => ({
+        label: k.alias ? `${k.alias} (${maskKeyText(k.key)})` : maskKeyText(k.key),
+        value: k.usage_fingerprint as string,
+      }));
+  }, [keysQuery.data]);
+
+  const rangeParams = dashboardRangeParams(range);
+  const query = React.useMemo(() => {
+    if (!selectedApiKey) return rangeParams;
+    const separator = rangeParams ? `${rangeParams}&` : '';
+    return `${separator}api_key=${encodeURIComponent(selectedApiKey)}`;
+  }, [rangeParams, selectedApiKey]);
+
+  const handleDrillDown = React.useCallback(() => {
+    const search = new URLSearchParams();
+    if (range.preset) search.set('preset', range.preset);
+    else if (range.from !== undefined) {
+      search.set('from', String(range.from));
+      if (typeof range.to === 'number') search.set('to', String(range.to));
+    }
+    if (selectedApiKey) {
+      search.set('api_key', selectedApiKey);
+    }
+    navigate(`/usage/events?${search.toString()}`);
+  }, [range, selectedApiKey, navigate]);
+
   // A relative preset and an open-ended (through-now) range both move with the
   // clock, so both are worth polling; a closed range is frozen.
   const sliding = isSlidingRange(range);
@@ -153,6 +213,8 @@ export const DashboardPage: React.FC = () => {
     // meaning - re-read this page. A refresh that left a ranking on screen from a minute ago would
     // be answering a question nobody asked it.
     void queryClient.invalidateQueries({ queryKey: [DASHBOARD_MODELS_QUERY_KEY] });
+    void queryClient.invalidateQueries({ queryKey: ['dashboard-providers'] });
+    void queryClient.invalidateQueries({ queryKey: ['management-overview'] });
     void refetch();
   }, [queryClient, refetch]);
 
@@ -220,12 +282,24 @@ export const DashboardPage: React.FC = () => {
         <div>
           <Title level={2} className="terminal-title">{t('nav.dashboard')}</Title>
         </div>
-        <Space size={8}>
+        <Space size={8} wrap>
           <TimeRangeControl range={range} onChange={applyRange} />
+          {clientKeyOptions.length > 0 && (
+            <Select
+              size="small"
+              allowClear
+              placeholder={t('dash.filter_by_key')}
+              style={{ minWidth: 160, maxWidth: 240 }}
+              value={selectedApiKey}
+              onChange={(val) => setSelectedApiKey(val)}
+              options={clientKeyOptions}
+              prefix={<KeyOutlined style={{ color: 'var(--muted)' }} />}
+            />
+          )}
           <Button
             size="small"
             icon={<HistoryOutlined />}
-            onClick={() => navigate('/usage/events')}
+            onClick={handleDrillDown}
           >
             {t('nav.usage_events')}
           </Button>
@@ -247,16 +321,18 @@ export const DashboardPage: React.FC = () => {
               type="link"
               size="small"
               icon={<RightOutlined />}
-              onClick={() => navigate('/usage/events')}
+              onClick={handleDrillDown}
               style={{ padding: 0, height: 'auto', fontSize: 12 }}
             >
               {t('nav.usage_events')}
             </Button>
           </div>
-          <div className="tile-value">{formatCount(data.requests.total)}</div>
+          <div className="tile-value">
+            <RollingNumber readout={resolveCountFlowReadout(data.requests.total)} />
+          </div>
           <div className="tile-caption">
             <span className="tile-rate">
-              <Pip tone={rateTone(data.requests.total, data.requests.failed)} />
+              <Pip tone={rateTone(data.requests.success_rate)} />
               {t('dash.success_rate_short')} <b>{formatRate(data.requests.success_rate)}</b>
             </span>
             <span className="tile-split">
@@ -278,7 +354,9 @@ export const DashboardPage: React.FC = () => {
 
         <Card className="dashboard-tile is-wide" styles={{ body: { padding: 20 } }}>
           <div className="tile-label">{t('dash.total_tokens')}</div>
-          <div className="tile-value" title={formatTokensFull(data.tokens.total)}>{formatTokensStyled(data.tokens.total, tokenStyle)}</div>
+          <div className="tile-value" title={formatTokensFull(data.tokens.total)}>
+            <RollingNumber readout={resolveTokenFlowReadout(data.tokens.total, tokenStyle)} />
+          </div>
           <div className="tile-caption">
             <span>{t('dash.tokens_input')} <b title={formatTokensFull(data.tokens.input)}>{formatTokensStyled(data.tokens.input, tokenStyle)}</b></span>
             <span>{t('dash.tokens_output')} <b title={formatTokensFull(data.tokens.output)}>{formatTokensStyled(data.tokens.output, tokenStyle)}</b></span>
@@ -300,7 +378,9 @@ export const DashboardPage: React.FC = () => {
 
         <Card className="dashboard-tile" styles={{ body: { padding: 20 } }}>
           <div className="tile-label">{t('dash.rpm')}</div>
-          <div className="tile-value is-small">{formatCount(data.metrics.rpm ?? null)}</div>
+          <div className="tile-value is-small">
+            <RollingNumber readout={resolveCountFlowReadout(data.metrics.rpm)} />
+          </div>
           <div className="tile-caption">
             <span>{t('dash.total_requests')} <b>{formatCount(data.requests.total)}</b></span>
           </div>
@@ -318,7 +398,9 @@ export const DashboardPage: React.FC = () => {
 
         <Card className="dashboard-tile" styles={{ body: { padding: 20 } }}>
           <div className="tile-label">{t('dash.tpm')}</div>
-          <div className="tile-value is-small" title={data.metrics.tpm == null ? undefined : `${formatTokensFull(data.metrics.tpm)} ${t('dash.unit_tokens_per_min')}`}>{formatCompact(data.metrics.tpm ?? null)}</div>
+          <div className="tile-value is-small" title={data.metrics.tpm == null ? undefined : `${formatTokensFull(data.metrics.tpm)} ${t('dash.unit_tokens_per_min')}`}>
+            <RollingNumber readout={resolveTokenRateFlowReadout(data.metrics.tpm)} />
+          </div>
           <div className="tile-caption">
             <span>{t('dash.total_tokens')} <b title={formatTokensFull(data.tokens.total)}>{formatTokensStyled(data.tokens.total, tokenStyle)}</b></span>
           </div>
@@ -331,7 +413,7 @@ export const DashboardPage: React.FC = () => {
             tone="warn"
             height={44}
             label={(timeMs) => dayjs(timeMs).format('MM-DD HH:mm')}
-            format={(value) => `${formatCompact(value)} ${t('dash.unit_tokens_per_min')}`}
+            format={(value) => `${formatTokenRate(value)} ${t('dash.unit_tokens_per_min')}`}
             formatExact={(value) => `${formatTokensFull(value)} ${t('dash.unit_tokens_per_min')}`}
           />
         </Card>
@@ -343,7 +425,9 @@ export const DashboardPage: React.FC = () => {
               <QuestionCircleOutlined className="tile-help" />
             </Tooltip>
           </div>
-          <div className="tile-value is-small">{formatCacheRate(data.metrics.cache_rate)}</div>
+          <div className="tile-value is-small">
+            <RollingNumber readout={resolveCacheRateReadout(data.metrics.cache_rate)} />
+          </div>
           <div className="tile-caption">
             <span>{t('dash.tokens_cache_read')} <b title={formatTokensFull(data.tokens.cache_read)}>{formatTokensStyled(data.tokens.cache_read, tokenStyle)}</b></span>
             <span>{t('dash.tokens_input')} <b title={formatTokensFull(data.tokens.input)}>{formatTokensStyled(data.tokens.input, tokenStyle)}</b></span>
@@ -376,16 +460,14 @@ export const DashboardPage: React.FC = () => {
               <QuestionCircleOutlined className="tile-help" />
             </Tooltip>
           </div>
-          <div className="tile-value is-small">${data.metrics.cost.toFixed(2)}</div>
+          <div className="tile-value is-small">
+            <RollingNumber readout={resolveTileCostReadout(data.metrics.cost)} />
+          </div>
           <div className="tile-caption">
-            {/* The backend distinguishes a true placeholder from a partial
-                estimate; keep both visible so an unpriced model never reads as
-                fully priced. */}
-            <span>
-              {data.metrics.cost_source === 'partial'
-                ? t('dash.cost_partial_note')
-                : t('dash.cost_placeholder_note')}
-            </span>
+            {/* The backend distinguishes a complete total from a partial estimate and
+                from a window with nothing priced; the caption follows that, and a
+                complete total carries none. */}
+            <span>{costNoteKey(data.metrics.cost_source) ? t(costNoteKey(data.metrics.cost_source)!) : ''}</span>
           </div>
           {/* Priced spend per bucket. Unpriced requests contribute nothing, which
               is why the tile keeps its cost_source note rather than implying the
@@ -414,7 +496,7 @@ export const DashboardPage: React.FC = () => {
           prop. */}
       <TokenHeatmap />
 
-      <OverviewSecondary />
+      <OverviewSecondary query={query} range={range} enabled={rangeReady} />
 
       {data.coverage.stored_events === 0 && (
         <div className="terminal-panel dashboard-empty">
@@ -444,7 +526,11 @@ export const DashboardPage: React.FC = () => {
  * carry: which instance answered, provider fleet totals, credential health and
  * runtime versions. It reads the overview endpoint, not the request store.
  */
-const OverviewSecondary: React.FC = () => {
+const OverviewSecondary: React.FC<{
+  query?: string;
+  range?: DashboardRange;
+  enabled?: boolean;
+}> = ({ query, range, enabled }) => {
   const t = useT();
   const { data } = useQuery({
     queryKey: ['management-overview'],
@@ -460,29 +546,12 @@ const OverviewSecondary: React.FC = () => {
 
   return (
     <div className="dashboard-secondary">
-      <section className="dashboard-section">
-        <div className="section-heading">
-          <h2>{t('dash.providers')}</h2>
-          <Text type="secondary">{t('dash.providers_hint')}</Text>
-        </div>
-        <div className="terminal-panel provider-list">
-          {overview.providers.length === 0 ? (
-            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('dash.empty_providers')} />
-          ) : (
-            overview.providers.map((provider: ManagementOverviewProvider) => (
-              <div className="provider-row" key={provider.id}>
-                <div className="provider-name"><span className="status-pip" />{provider.id}</div>
-                <span className="provider-credentials">{t('dash.credentials_n', { n: provider.credentials })}</span>
-                <span className="provider-total">{formatCount(provider.total)}</span>
-                <span className="provider-rate">{formatRate(provider.success_rate)}</span>
-                <div className="dashboard-meter">
-                  <span style={{ width: `${Math.max(0, Math.min(100, provider.success_rate ?? 0))}%` }} />
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-      </section>
+      <DashboardProviders
+        overview={overview}
+        query={query}
+        range={range}
+        enabled={enabled}
+      />
 
       <div className="dashboard-lower">
         <div className="terminal-panel dashboard-card">

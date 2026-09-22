@@ -171,7 +171,7 @@
   font-family: monospace;
   color: var(--fg);
   cursor: pointer;
-  transition: all var(--motion-fast, 50ms) ease;
+  transition: background var(--motion-fast) var(--ease-standard), border-color var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard);
 }
 
 .unpriced-chip:hover {
@@ -220,8 +220,13 @@
 }
 
 /* ── Filter Segmented Tabs ── */
+/* Wrapping rather than shrinking, at every width. The four tabs are wider than a phone's
+   toolbar track, and a flex item may shrink below its content by default - which broke the
+   two-character labels of the Chinese console in half and rendered "manual" and "unpriced" as
+   two stacked characters. A tab is an indivisible label, so the container wraps instead. */
 .filter-tabs {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 4px;
   background: var(--surface);
@@ -232,6 +237,8 @@
 
 .filter-tab {
   display: inline-flex;
+  flex: 0 0 auto;
+  white-space: nowrap;
   align-items: center;
   gap: 6px;
   padding: 4px 10px;
@@ -241,7 +248,7 @@
   background: transparent;
   color: var(--muted);
   cursor: pointer;
-  transition: all var(--motion-fast, 50ms) ease;
+  transition: color var(--motion-fast) var(--ease-standard), background var(--motion-fast) var(--ease-standard), border-color var(--motion-fast) var(--ease-standard);
   line-height: 1.4;
 }
 

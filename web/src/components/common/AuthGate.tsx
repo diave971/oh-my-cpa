@@ -1,18 +1,18 @@
 import React from 'react';
-import { Alert, App as AntdApp, Button, Card, Form, Input, Skeleton, Tooltip } from 'antd';
-import { LockOutlined, MoonOutlined, SunOutlined } from '@ant-design/icons';
+import { Alert, App as AntdApp, Button, Card, Form, Input, Skeleton } from 'antd';
+import { LockOutlined } from '@ant-design/icons';
 import { api, ApiError, setUnauthorizedHandler } from '../../api/client';
 import { useQueryClient } from '@tanstack/react-query';
-import { useI18n, useT } from '../../i18n';
-import { useThemeMode } from '../../theme/ThemeContext';
+import { useT } from '../../i18n';
 import { BrandArtwork } from './BrandArtwork';
+import { PreferenceMenus } from './PreferenceMenus';
+import { isDemoMode } from '../../types/demoMode';
 
 export const AuthGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const t = useT();
-  const { lang, toggleLang } = useI18n();
-  const { themeMode, toggleTheme } = useThemeMode();
   const { message } = AntdApp.useApp();
   const queryClient = useQueryClient();
+  const isDemo = isDemoMode();
   const [status, setStatus] = React.useState<'loading' | 'authenticated' | 'unauthenticated'>('loading');
   const [error, setError] = React.useState<string>();
   const [isSubmitting, setIsSubmitting] = React.useState(false);
@@ -61,20 +61,10 @@ export const AuthGate: React.FC<{ children: React.ReactNode }> = ({ children }) 
             and carries it for screen readers rather than being decorative. */}
         <BrandArtwork shape="wordmark" height={22} className="app-brand-logo" label="Oh My CPA" />
       </div>
+      {/* The same two menus the console header shows, over the same stored theme and
+          language, so a signed-out visitor picks from the full registry before signing in. */}
       <div className="auth-header-actions">
-        <Tooltip title={t('header.theme')}>
-          <Button
-            type="text"
-            icon={themeMode === 'dark' ? <SunOutlined /> : <MoonOutlined />}
-            onClick={toggleTheme}
-            aria-label={t('header.theme')}
-          />
-        </Tooltip>
-        <Tooltip title={t('header.language')}>
-          <Button type="text" onClick={toggleLang} aria-label={t('header.language')}>
-            <span className="terminal-mono">{lang === 'zh' ? 'EN' : '中'}</span>
-          </Button>
-        </Tooltip>
+        <PreferenceMenus />
       </div>
     </header>
   );
@@ -108,7 +98,16 @@ export const AuthGate: React.FC<{ children: React.ReactNode }> = ({ children }) 
             <p className="auth-subtitle">{t('auth.subtitle')}</p>
           </div>
           {error && <Alert showIcon type="error" description={error} className="auth-alert" />}
-          <Form layout="vertical" onFinish={login} requiredMark={false}>
+          {/* The demonstration signs in anyone who asks, so the field is filled in for
+              them. It is still the ordinary form: what it protects is the deployment's
+              own session, and there is nothing behind it that a demo must withhold. */}
+          {isDemo && <Alert showIcon type="info" description={t('demo.login_hint')} className="auth-alert" />}
+          <Form
+            layout="vertical"
+            onFinish={login}
+            requiredMark={false}
+            initialValues={isDemo ? { password: 'omc-demo' } : undefined}
+          >
             <Form.Item
               label={t('auth.label')}
               name="password"
@@ -126,7 +125,7 @@ export const AuthGate: React.FC<{ children: React.ReactNode }> = ({ children }) 
               {t('auth.submit')}
             </Button>
           </Form>
-          <div className="auth-footnote">{t('auth.footnote')}</div>
+          <div className="auth-footnote">{isDemo ? t('demo.notice') : t('auth.footnote')}</div>
         </Card>
       </main>
     </div>

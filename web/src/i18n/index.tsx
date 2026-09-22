@@ -1,14 +1,36 @@
 import React from 'react';
+import { LANGUAGES, languageLocale, type Lang } from './language';
 
-export type Lang = 'zh' | 'en';
+export { LANGUAGES, languageLocale, isChineseLanguage } from './language';
+export type { Lang } from './language';
 
 /**
- * Bilingual dictionary, values are [zh, en] pairs. Keys not found fall through
- * to the key itself so misses are visible in dev.
+ * Base dictionary, values are [Simplified Chinese, English] pairs. Keys not
+ * found fall through to the key itself so misses are visible in dev.
  */
 const DICT: Record<string, [string, string]> = {
   // ── app / shell ──────────────────────────────────────────────────────────
   'app.name': ['oh-my-cpa', 'oh-my-cpa'],
+  // The demo markers are the one place copy is deliberately not translated: they
+  // label a deployment rather than the product, and a badge that changes width with
+  // the interface language moves the controls beside it.
+  'demo.badge': ['DEMO', 'DEMO'],
+  'demo.badge_tooltip': [
+    '在线演示：数据来自内置样例，不会连接任何真实的 CPA 或模型服务。',
+    'Online demo: the data is a built-in sample, and no real gateway or model service is behind it.',
+  ],
+  'demo.notice': [
+    '演示模式 — 修改不会被保存。',
+    'Demo mode — changes are not persisted.',
+  ],
+  'demo.blocked': [
+    '演示模式不提供该操作。',
+    'Not available in the demo.',
+  ],
+  'demo.login_hint': [
+    '这是一个公开演示，直接登录即可查看控制台。',
+    'This is a public demo: sign in to look around the console.',
+  ],
   'common.management': ['管理中心', 'Management center'],
   'common.retry': ['重试', 'Retry'],
   'common.refresh': ['刷新', 'Refresh'],
@@ -27,6 +49,7 @@ const DICT: Record<string, [string, string]> = {
   'common.all': ['全部', 'All'],
   'common.copy': ['复制', 'Copy'],
   'common.copied': ['已复制', 'Copied'],
+  'common.copy_failed': ['复制失败', 'Copy failed'],
   'common.search': ['搜索', 'Search'],
 
   // ── navigation ───────────────────────────────────────────────────────────
@@ -49,7 +72,7 @@ const DICT: Record<string, [string, string]> = {
   'nav.omc_settings': ['OMC 设置', 'OMC Settings'],
   'nav.plugins': ['插件管理', 'Plugin manager'],
   'nav.plugin_store': ['插件商店', 'Plugin store'],
-  'nav.system': ['中心信息', 'About'],
+  'nav.system': ['系统信息', 'System Information'],
   'nav.triage': ['待整理资源', 'Triage'],
   'nav.all_resources': ['所有资源', 'All resources'],
   'nav.instances': ['CPA 实例', 'CPA instances'],
@@ -58,12 +81,12 @@ const DICT: Record<string, [string, string]> = {
   'header.collapse_sidebar': ['收起侧栏', 'Collapse sidebar'],
   'header.expand_sidebar': ['展开侧栏', 'Expand sidebar'],
   'header.open_nav': ['打开导航', 'Open navigation'],
-  'header.base_path': ['挂载路径：{path}', 'Mount path: {path}'],
-  'header.online': ['CPA 在线{version}', 'CPA online{version}'],
   'header.degraded': ['CPA 部分接口可用', 'CPA partially available'],
-  'header.offline': ['CPA 未连接或正在重试', 'CPA offline or retrying'],
   'header.refresh_all': ['刷新全部', 'Refresh all'],
   'header.theme': ['界面主题', 'Theme'],
+  // The mode control's accessible name. Its tooltip is the control's own name and says nothing about the
+  // state - the icon carries that - so the name states the mode for readers who cannot see the icon.
+  'header.theme_state': ['界面主题：{mode}', 'Theme: {mode}'],
   'header.language': ['界面语言', 'Language'],
 
   // ── OMC settings page ───────────────────────────────────────────
@@ -90,12 +113,57 @@ const DICT: Record<string, [string, string]> = {
   'omc.token_style_en': ['缩写 K/M/B', 'Compact K/M/B'],
   'omc.token_style_zh': ['中文 万/亿', 'Chinese 万/亿'],
   'omc.token_style_full': ['完整数字', 'Full digits'],
-  'omc.theme': ['界面主题', 'Theme'],
-  'omc.theme_dark': ['深色', 'Dark'],
-  'omc.theme_light': ['浅色', 'Light'],
+  // The appearance controls: one mode, two palettes, and the editor behind a custom one. The
+  // mode names are also the header control's states, so they are worded to stand alone.
+  'omc.theme_mode': ['主题模式', 'Theme mode'],
+  'omc.theme_mode_light': ['浅色', 'Light'],
+  'omc.theme_mode_dark': ['暗色', 'Dark'],
+  'omc.theme_mode_system': ['跟随系统', 'Follow system'],
+  'omc.theme_mode_desc': ['当前为{mode}', 'Currently {mode}'],
+  'omc.theme_mode_desc_system': ['跟随系统，当前为{mode}', 'Following the system, currently {mode}'],
+  'omc.palette_light': ['浅色模式配色', 'Light-mode palette'],
+  'omc.palette_dark': ['暗色模式配色', 'Dark-mode palette'],
+  // A custom palette is named by the dictionary rather than by the operator, so its label is
+  // translated like every other control's and there is no untranslatable string in the console.
+  'omc.palette_custom': ['自定义', 'Custom'],
+  'omc.palette_custom_desc': ['自己调整九个颜色', 'Adjust nine colours yourself'],
+  'omc.palette_editor_label': ['{mode}自定义配色', 'Custom {mode} palette'],
+  'omc.palette_base': ['起点', 'Start from'],
+  'omc.palette_reset': ['重置', 'Reset'],
+  'omc.palette_done': ['完成', 'Done'],
+  'omc.palette_previewing': ['正在预览{mode}配色，关闭编辑器后返回', 'Previewing the {mode} palette; closing the editor returns'],
+  // The nine editable tokens, named by what they paint rather than by what they are called in
+  // code: an operator sees a page and its panels, not `bg` and `elevated`.
+  'omc.token_bg': ['页面', 'Page'],
+  'omc.token_surface': ['卡片与面板', 'Cards and panels'],
+  'omc.token_elevated': ['浮层与菜单', 'Menus and dialogs'],
+  'omc.token_fg': ['主要文字', 'Primary text'],
+  'omc.token_fg2': ['次要文字', 'Secondary text'],
+  'omc.token_muted': ['提示文字', 'Hint text'],
+  'omc.token_meta': ['注脚与图表标签', 'Footnotes and chart labels'],
+  'omc.token_border': ['边框与分隔线', 'Borders and dividers'],
+  'omc.token_accent': ['强调色', 'Accent'],
+  // The contrast readout. Each token is judged against the floor its own role carries, and the
+  // tooltip names the role so the marker never has to be memorised.
+  'omc.contrast_floor': ['需 ≥ {floor}:1（{role}）', 'Needs ≥ {floor}:1 ({role})'],
+  'omc.contrast_layer': ['层次差异，无文字对比度要求', 'A layer step; no text-contrast floor'],
+  'omc.contrast_role_text': ['正文', 'body text'],
+  'omc.contrast_role_hint': ['提示', 'hint text'],
+  'omc.contrast_role_quiet': ['注脚', 'footnote'],
+  'omc.contrast_role_layer': ['层次', 'layer'],
+  'theme.omc_dark': ['OMC Dark', 'OMC Dark'],
+  'theme.omc_dark_desc': ['原始 graphite 深色控制台', 'Original graphite dark console'],
+  'theme.omc_light': ['OMC Light', 'OMC Light'],
+  'theme.omc_light_desc': ['原始高对比浅色控制台', 'Original high-contrast light console'],
+  'theme.midnight': ['Midnight', 'Midnight'],
+  'theme.midnight_desc': ['蓝黑背景与冷蓝强调色', 'Blue-black surfaces with a cool blue accent'],
+  'theme.porcelain': ['Porcelain', 'Porcelain'],
+  'theme.porcelain_desc': ['干净白底与克制蓝绿信号色', 'Clean white surfaces with restrained blue-green signals'],
+  'theme.forest': ['Forest', 'Forest'],
+  'theme.forest_desc': ['深绿背景与明亮植物色调', 'Deep green surfaces with vivid botanical accents'],
+  'theme.sandstone': ['Sandstone', 'Sandstone'],
+  'theme.sandstone_desc': ['暖砂浅色背景与青绿色强调色', 'Warm sand surfaces with a teal accent'],
   'omc.language': ['界面语言', 'Language'],
-  'omc.language_zh': ['简体中文', 'Simplified Chinese'],
-  'omc.language_en': ['English', 'English'],
   'header.logout': ['退出', 'Sign out'],
   'shell.cpa': ['CPA', 'CPA'],
   'shell.connected': ['已连接', 'connected'],
@@ -206,6 +274,8 @@ const DICT: Record<string, [string, string]> = {
   'dash.range.start_date': ['开始日期', 'Start date'],
   'dash.range.until_now': ['至今', 'Until now'],
   'dash.window_minutes': ['桶宽 {n} 分钟', '{n}-minute window'],
+  'dash.filter_by_key': ['按客户端密钥筛选', 'Filter by client key'],
+  'dash.all_keys': ['全部客户端密钥', 'All client keys'],
   'dash.total_requests': ['请求总数', 'Requests'],
   'dash.total_tokens': ['Token 总数', 'Tokens'],
   'dash.success_rate_short': ['成功率', 'Success rate'],
@@ -302,8 +372,10 @@ const DICT: Record<string, [string, string]> = {
   'dash.bucket_tooltip': ['{t} · 成功 {s} · 失败 {f}', '{t} · success {s} · failed {f}'],
   'dash.providers': ['供应商', 'Providers'],
   'dash.providers_hint': ['真实凭据与请求聚合', 'Live credentials and request totals'],
+  'dash.providers_type_oauth': ['OAuth', 'OAuth'],
+  'dash.providers_status_disabled': ['已停用', 'Disabled'],
   'dash.empty_providers': ['尚无 provider 流量数据', 'No provider traffic yet'],
-  'dash.credentials_n': ['{n} credentials', '{n} credentials'],
+  'dash.credentials_n': ['{n} 个凭据', '{n} credentials'],
   'dash.health': ['凭据健康度', 'Credential health'],
   'dash.health_empty': ['尚无认证文件数据。', 'No auth file data yet.'],
   'dash.runtime': ['运行信息', 'Runtime'],
@@ -389,9 +461,49 @@ const DICT: Record<string, [string, string]> = {
   'af.model_name': ['显示名称', 'Display Name'],
   'af.field_prefix': ['路由前缀 (Prefix)', 'Prefix'],
   'af.field_proxy_url': ['代理地址 (Proxy URL)', 'Proxy URL'],
+  'af.field_expired': ['令牌过期时间', 'Token expiry'],
+  'af.field_expired_hint': ['按 CPA 凭据契约保存的时间字符串，通常为 RFC 3339；空值表示未设置。', 'The expiry string persisted by the CPA credential contract, usually RFC 3339; empty means unset.'],
+  'af.alias_open': ['模型别名', 'Model aliases'],
+  'af.alias_title': ['OAuth 模型别名', 'OAuth model aliases'],
+  'af.alias_provider_placeholder': ['选择已配置的提供商', 'Select a configured provider'],
+  'af.alias_new_provider_placeholder': ['输入提供商键，例如 codex', 'Enter a provider key, e.g. codex'],
+  'af.alias_load_provider': ['载入', 'Load'],
+  'af.alias_add_mapping': ['新增模型映射', 'Add mapping'],
+  'af.alias_delete_provider': ['删除提供商映射', 'Delete provider mappings'],
+  'af.alias_col_name': ['上游模型名', 'Upstream model'],
+  'af.alias_col_alias': ['客户端别名', 'Client alias'],
+  'af.alias_col_display': ['显示名称', 'Display name'],
+  'af.alias_col_fork': ['保留原名', 'Keep original'],
+  'af.alias_col_force': ['强制映射', 'Force mapping'],
+  'af.alias_remove': ['删除', 'Remove'],
+  'af.alias_empty': ['尚未配置模型别名。', 'No model aliases configured.'],
+  'af.alias_save': ['保存模型别名', 'Save model aliases'],
+  'af.alias_saved': ['模型别名已保存并完成回读校验。', 'Model aliases saved and verified by readback.'],
+  'af.alias_delete_confirm_title': ['删除提供商模型别名？', 'Delete provider model aliases?'],
+  'af.alias_delete_confirm_desc': ['将删除 {provider} 的全部模型别名，此操作不可撤销。', 'This deletes every model alias for {provider} and cannot be undone.'],
+  'af.alias_delete_success': ['已删除 {provider} 的模型别名。', 'Deleted model aliases for {provider}.'],
+  'af.alias_unsaved_title': ['放弃未保存的模型别名？', 'Discard unsaved model aliases?'],
+  'af.alias_unsaved_desc': ['关闭后，本次未保存的模型别名修改将丢失。', 'Closing now discards the unsaved model alias changes.'],
+  'af.alias_provider_locked': ['请先保存或放弃当前修改，再切换提供商。', 'Save or discard the current changes before switching providers.'],
+  'af.alias_dirty_hint': ['当前修改尚未保存；保存或删除映射后才能切换提供商。', 'The current changes are not saved; save or delete mappings before switching providers.'],
+  'af.alias_provider_lock_note': ['别名按提供商整体替换；保存成功前不会关闭抽屉。', 'Aliases replace the provider as a set; the drawer stays open until the write and readback succeed.'],
+  'af.alias_error_provider': ['提供商键只能包含小写字母、数字和连字符。', 'The provider key may contain only lowercase letters, digits, and hyphens.'],
+  'af.alias_error_too_many': ['每个提供商最多配置 512 条模型别名。', 'A provider can contain at most 512 model aliases.'],
+  'af.alias_error_name_alias_required': ['上游模型名和客户端别名都不能为空。', 'Both the upstream model and client alias are required.'],
+  'af.alias_error_field_too_long': ['模型别名字段过长。', 'A model alias field is too long.'],
+  'af.alias_error_alias_same': ['客户端别名不能与上游模型名相同。', 'The client alias must differ from the upstream model name.'],
+  'af.alias_error_alias_duplicate': ['客户端别名 {alias} 重复。', 'The client alias {alias} is duplicated.'],
+  'af.alias_unsupported': ['当前 CPA 版本不支持 OAuth 模型别名接口。', 'This CPA version does not support the OAuth model alias API.'],
   'af.field_disable_cooling': ['禁用冷却机制 (Disable Cooling)', 'Disable Cooling'],
+  'af.field_websockets': ['WebSocket 传输 (WebSockets)', 'WebSockets'],
+  'af.field_using_api': ['使用 API 模式 (Using API)', 'Using API'],
   'af.field_excluded_models': ['排除模型 (Excluded Models)', 'Excluded Models'],
   'af.field_excluded_models_hint': ['以逗号或换行分隔模型 ID', 'Comma or newline separated model IDs'],
+  'af.field_priority_hint': ['数值越高越先被调度；同优先级内再按权重分配。', 'Higher values are selected first; weight applies only within the same priority.'],
+  'af.field_weight_hint': ['仅 weighted-round-robin 策略使用；0 或负数会被 CPA 归零并从加权调度中排除。', 'Used only by weighted-round-robin; CPA normalizes zero or negative values to 0, excluding the credential from weighted selection.'],
+  'af.safe_fields_error': ['无法读取该认证文件的安全配置字段，核心优先级、权重和备注仍可编辑。', 'Safe configuration fields could not be read. Priority, weight and note remain editable.'],
+  'af.val_priority_safe_int': ['优先级必须是安全整数', 'Priority must be a safe integer'],
+  'af.val_weight_range': ['权重必须为不超过 1,000,000 的整数', 'Weight must be an integer no greater than 1,000,000'],
   'af.unsaved_confirm_title': ['放弃未保存的修改？', 'Discard unsaved changes?'],
   'af.unsaved_confirm_desc': ['当前抽屉中包含未保存的修改，关闭将丢失这些修改。', 'There are unsaved changes in this drawer. Closing will discard them.'],
   'af.upload_partial': ['已上传 {uploaded} 个文件，{failed} 个失败', 'Uploaded {uploaded} files, {failed} failed'],
@@ -449,7 +561,7 @@ const DICT: Record<string, [string, string]> = {
   'cfg.grp_service': ['监听服务与存储', 'Service Listener & Storage'],
   'cfg.grp_service_desc': ['配置代理网关监听的主机地址、端口与凭据存储目录', 'Configure network interface, port, and auth credential storage'],
   'cfg.grp_apikeys': ['API 访问密钥', 'API Access Keys'],
-  'cfg.grp_apikeys_desc': ['配置客户端调用代理所需的鉴权密钥', 'Configure authentication keys required by clients'],
+  'cfg.grp_apikeys_desc': ['客户端调用代理所需的鉴权密钥，在密钥管理页维护', 'Authentication keys clients use to call the proxy, maintained on the Key Management page'],
   'cfg.grp_tls': ['传输安全 (TLS/SSL)', 'Transport Security (TLS/SSL)'],
   'cfg.grp_tls_desc': ['配置 HTTPS 加密通信与证书链', 'Configure HTTPS encrypted connections and certificate chain'],
   'cfg.grp_remote': ['远程管理', 'Remote Management'],
@@ -531,12 +643,12 @@ const DICT: Record<string, [string, string]> = {
   'cfg.api_keys_add': ['添加 API 密钥', 'Add API Key'],
   'cfg.api_keys_generate': ['生成随机密钥', 'Generate Random Key'],
   'cfg.api_keys_placeholder': ['请输入 API 密钥或点击生成', 'Enter API key or generate'],
-  'cfg.api_keys_empty': ['暂无 API 密钥（将允许无密钥访问）', 'No API keys configured (unauthenticated access allowed)'],
   'cfg.api_keys_copy': ['复制', 'Copy'],
   'cfg.api_keys_edit': ['编辑', 'Edit'],
   'cfg.api_keys_delete': ['删除', 'Delete'],
   'cfg.api_keys_delete_confirm': ['确定删除该 API 密钥？', 'Delete this API key?'],
   'cfg.api_keys_count': ['共 {n} 个密钥', '{n} keys configured'],
+  'cfg.api_keys_manage': ['前往密钥管理', 'Open key management'],
   'cfg.f_host': ['主机地址', 'Host'],
   'cfg.f_host_desc': ['服务监听的网络接口地址，例如 0.0.0.0 或 127.0.0.1', 'Network interface to bind to, e.g. 0.0.0.0 or 127.0.0.1'],
   'cfg.f_port': ['端口', 'Port'],
@@ -632,30 +744,36 @@ const DICT: Record<string, [string, string]> = {
   'keys.save': ['保存密钥', 'Save keys'],
   'keys.save_confirm': ['保存密钥并应用？', 'Save and apply the keys?'],
   'keys.saved': ['密钥已保存', 'Keys saved'],
-  'keys.persist_note': ['密钥随 CPA 配置一并保存，与配置面板共用同一个版本校验与冲突保护流程。', 'Keys are persisted with the CPA configuration, sharing the same revision check and conflict protection as the configuration panel.'],
   // ── key management: aliases and per-key usage ────────────────────────────
   'keys.col_name': ['名称', 'Name'],
   'keys.col_key': ['密钥', 'Key'],
   'keys.col_requests': ['请求数', 'Requests'],
   'keys.col_last_used': ['最近使用', 'Last used'],
   'keys.col_actions': ['操作', 'Actions'],
+  'keys.actions_more': ['更多操作', 'More actions'],
   'keys.unnamed': ['未命名', 'Unnamed'],
-  'keys.rename': ['重命名', 'Rename'],
   'keys.rename_title': ['为密钥设置名称', 'Name this key'],
-  'keys.rename_label': ['名称', 'Name'],
-  'keys.rename_placeholder': ['例如：生产 CI、桌面客户端', 'e.g. Production CI, Desktop client'],
   'keys.rename_hint': ['名称只影响本控制台的显示，不会修改 CPA 中的密钥，也不会被发往上游。留空则清除名称。', 'The name only labels this console. It never changes the key in CPA and is never sent upstream. Leave it empty to clear the name.'],
   'keys.renamed': ['名称已保存', 'Name saved'],
   'keys.rename_cleared': ['名称已清除', 'Name cleared'],
   'keys.rename_conflict': ['名称已被其他会话修改，已重新载入最新状态', 'The name was changed by another session; the latest state has been reloaded'],
   'keys.rename_too_long': ['名称最长 {n} 个字符', 'The name may be at most {n} characters'],
   'keys.rename_control': ['名称不能包含换行或控制字符', 'The name cannot contain line breaks or control characters'],
-  'keys.no_usage': ['窗口内无请求', 'No requests in window'],
   'keys.usage_scope': ['统计范围：{range} 内本控制台已入库的请求（不代表密钥生命周期总量）', 'Counts cover requests stored by this console within {range}; they are not lifetime totals for the key'],
   'keys.usage_range': ['最近 24 小时', 'the last 24 hours'],
   'keys.view_requests': ['查看请求', 'View requests'],
-  'keys.alias_label': ['名称：{name}', 'Name: {name}'],
   'keys.not_linked': ['该密钥尚未出现在已入库的请求记录中', 'This key has no stored request record yet'],
+  'keys.modal_label': ['网关客户端密钥', 'Gateway client key'],
+  'keys.modal_alias_label': ['自定义名称 (可选)', 'Custom name (optional)'],
+  'keys.modal_alias_placeholder': ['例如：生产环境、Cursor、开发测试，留空无名称', 'e.g. Production, Cursor, Dev testing; leave blank for unnamed'],
+  'keys.duplicate': ['该密钥已经在列表中', 'This key is already in the list'],
+  'keys.alias_save_failed': ['保存密钥别名失败，已保留待重试', 'Failed to save key alias; preserved for retry'],
+  'keys.search_placeholder': ['按名称或密钥搜索...', 'Search by name or key...'],
+  'keys.search_empty': ['没有匹配的密钥', 'No keys match this search'],
+  'keys.empty_title': ['暂无客户端密钥', 'No Client Keys'],
+  'keys.empty_desc': ['当前网关尚未配置客户端 API 密钥。创建密钥后，下游工具即可通过本代理访问 AI 服务。', 'No client API keys are configured yet. Create a key to allow downstream tools to access AI services through this proxy.'],
+  'keys.empty_cta': ['添加第一个密钥', 'Add your first key'],
+  'keys.delete_confirm_desc': ['保存后将从 CPA 的 api-keys 中移除；本控制台不保存该密钥值，删除后无法恢复。如需保留请先复制。', "Saving removes it from CPA's api-keys. This console stores no copy of the value, so it cannot be recovered; copy it first if you want to keep it."],
   'cfg.source_save_confirm': ['保存配置并应用？', 'Save and apply config?'],
   'cfg.source_save_confirm_desc': ['更新将直接写入 CPA 运行配置，格式错误将导致启动失败。', 'Updates will be written directly to CPA running config. Invalid YAML will fail.'],
   'cfg.source_reload': ['重新加载', 'Reload Source'],
@@ -923,6 +1041,7 @@ const DICT: Record<string, [string, string]> = {
   'pro.family_codex': ['Codex (Response)', 'Codex (Response)'],
   'pro.family_claude': ['Anthropic (Messages)', 'Anthropic (Messages)'],
   'pro.family_gemini': ['Gemini', 'Gemini'],
+  'pro.family_meta': ['Meta Muse', 'Meta Muse'],
   'pro.field_name': ['提供商显示名称', 'Provider Display Name'],
   'pro.field_name_ph': ['例如：DeepSeek 官方主线路 / OpenCode Go', 'e.g. DeepSeek Official / OpenCode Go'],
   'pro.field_base_url': ['接入端点 Base URL', 'Endpoint Base URL'],
@@ -937,7 +1056,7 @@ const DICT: Record<string, [string, string]> = {
   'pro.provider_updated': ['提供商已成功更新', 'Provider updated successfully'],
   'pro.provider_deleted': ['提供商已删除', 'Provider deleted'],
   'pro.delete_provider_confirm': ['确定删除该提供商？删除后 CPA 将停止向该端点转发请求。', 'Delete this provider? CPA will stop forwarding requests to this endpoint.'],
-  'pro.field_base_url_desc': ['此提供商要求填写服务地址', 'This provider requires a service endpoint URL'],
+  'pro.field_base_url_desc': ['提供商服务地址；模型拉取要求 HTTPS，仅 localhost、回环或私有 IP 字面量可使用 HTTP', 'Provider endpoint URL; model pulls require HTTPS except for localhost, loopback, or private IP literals'],
   'pro.field_website': ['官网', 'Website'],
   'pro.field_website_desc': ['仅保存在 Oh My CPA，不写入 CPA 配置', 'Stored in Oh My CPA only, never written to the CPA config'],
   'pro.field_website_invalid': ['请填写以 http:// 或 https:// 开头的完整地址', 'Enter a full address starting with http:// or https://'],
@@ -1035,6 +1154,7 @@ const DICT: Record<string, [string, string]> = {
   'events.group_category': ['来源分组类型', 'Origin grouping type'],
   'events.credentials_unavailable': ['认证文件元数据暂时不可用，仍显示已关联资源或认证索引。', 'Auth file metadata is unavailable. Linked resources or auth indexes are shown instead.'],
   'events.provider': ['提供商', 'Provider'],
+  'events.provider_key': ['上游密钥', 'Provider key'],
   'events.credential': ['认证来源', 'Credential source'],
   'events.source': ['来源指纹', 'Source fingerprint'],
   'events.resource_name': ['关联资源名称', 'Linked resource name'],
@@ -1303,6 +1423,18 @@ const DICT: Record<string, [string, string]> = {
   'oauth.xai_title': ['xAI OAuth', 'xAI OAuth'],
   'oauth.xai_hint': ['通过 OAuth 流程登录 xAI Grok 服务，授权完成后自动获取并保存认证文件（Grok 仅显示 code 时可直接粘贴 code）。', 'Sign in to xAI Grok service via OAuth; credentials are saved automatically, or paste the bare code shown by Grok.'],
   'oauth.xai_login': ['开始 xAI 登录', 'Start xAI Sign-in'],
+  'oauth.devin_title': ['Devin OAuth', 'Devin OAuth'],
+  'oauth.devin_hint': ['通过 OAuth 流程登录 Devin / Cognition。授权后浏览器会跳转到 CPA 主机上的本机回调地址；若该页面在你的机器上打不开，请复制地址栏中的完整 URL 粘贴回来提交（5 分钟内完成）。', 'Sign in to Devin / Cognition via OAuth. The browser lands on a loopback callback on the CPA host; if that page is not reachable from your machine, copy the complete URL from the address bar and submit it here (within five minutes).'],
+  'oauth.devin_login': ['开始 Devin 登录', 'Start Devin Sign-in'],
+  'oauth.devin_callback_hint': ['远程浏览器：请从地址栏复制以 /devin/callback 结尾的完整最终 URL（即使本机打不开该页面），保持端口、http/https、code 与 state 不变，粘贴到这里提交，然后等待认证完成。', 'Remote browser: copy the complete final URL ending in /devin/callback from the address bar, even when the loopback page cannot be opened. Keep its port, scheme, code and state unchanged, submit it here, then wait for authentication to finish.'],
+  'oauth.devin_callback_placeholder': ['http://127.0.0.1:<CPA 端口>/callback?code=...&state=...（或 /devin/callback）', 'http://127.0.0.1:<CPA port>/callback?code=...&state=... (or /devin/callback)'],
+  'oauth.devin_callback_invalid': ['请粘贴包含 state 与 code（或 error）的完整 http/https 回调 URL', 'Paste the complete http/https callback URL containing state and an authorization code or error'],
+  'oauth.devin_callback_state_mismatch': ['该回调不属于本次 Devin 登录。请使用本次授权产生的最终 URL，不要复用旧回调。', 'This callback does not belong to the current Devin sign-in. Use the final URL from this attempt instead of reusing an older callback.'],
+  'oauth.meta_title': ['Meta Muse OAuth', 'Meta Muse OAuth'],
+  'oauth.meta_hint': ['通过设备码授权登录 Meta Muse (api.meta.ai)：在浏览器中确认下方设备码，完成后点击“检查授权状态”保存认证文件。', 'Sign in to Meta Muse (api.meta.ai) via device authorization: confirm the device code below in your browser, then click "Check Authorization Status" to save the auth file.'],
+  'oauth.meta_login': ['开始 Meta Muse 登录', 'Start Meta Muse Sign-in'],
+  'oauth.copy_code': ['复制设备码', 'Copy code'],
+  'oauth.cancel_failed': ['取消失败：{msg}', 'Cancellation failed: {msg}'],
   'oauth.plugin_title': ['{name} OAuth', '{name} OAuth'],
   'oauth.plugin_hint': ['通过 CPA 插件 OAuth 流程登录 {name} 服务，授权完成后自动获取并保存认证文件（远程浏览器可粘贴回调链接手动提交）。', 'Sign in to {name} via CPA plugin OAuth flow; credentials are saved automatically, or paste the callback URL for remote browsers.'],
   'oauth.plugin_login': ['开始 {name} 登录', 'Start {name} Sign-in'],
@@ -1374,6 +1506,16 @@ const DICT: Record<string, [string, string]> = {
   'quota.empty': ['暂无认证凭据或配额数据', 'No credentials or quota data available'],
   'quota.col_plan': ['套餐', 'Plan'],
   'quota.col_renewal': ['续期时间', 'Renewal'],
+  'quota.renewal_snapshot': ['未实时核实', 'not verified live'],
+  'quota.renewal_snapshot_hint': [
+    '来自凭据 id_token 的订阅快照，上游只会将它向后推移，因此这是实际续期时间的下界；刷新时若实时订阅接口可用会自动核实。',
+    'Read from the credential id_token subscription snapshot. Upstream only moves this window forward, so it is a lower bound on the real renewal; a refresh verifies it live when the subscription endpoint answers.',
+  ],
+  'quota.renewal_not_renewing': ['不再自动续期', 'will not auto-renew'],
+  'quota.renewal_not_renewing_hint': [
+    '上游返回 will_renew=false：该订阅到期后不会自动续期，到期日即为实际失效时间。',
+    'Upstream reports will_renew=false: the subscription will not renew, so the end date is when access actually stops.',
+  ],
   'quota.col_reset_count': ['重置次数', 'Resets'],
   'quota.windows_title': ['限额信息', 'Usage limits'],
   'quota.reset_expiry_title': ['主动重置过期时间', 'Manual reset expiry'],
@@ -1391,31 +1533,84 @@ const DICT: Record<string, [string, string]> = {
   'quota.empty_provider': ['该提供商暂无凭据', 'No credentials for this provider'],
 
   // ── system ───────────────────────────────────────────────────────────────
-  'sys.title': ['系统信息与自检诊断', 'System Information & Diagnostics'],
-  'sys.subtitle': ['查看系统组件拓扑、版本检查与运行状态，导出脱敏诊断包', 'Inspect system topology, version status, runtime health, and export redacted diagnostics'],
+  'sys.title': ['系统信息', 'System Information'],
+  'sys.subtitle': ['两个产品的版本与更新状态、数据库占用，以及维护与诊断操作',
+    'Versions and updates for both products, the database footprint, and maintenance operations'],
   'sys.version_card': ['版本与更新', 'Versions & Updates'],
-  'sys.omc_version': ['Oh My CPA 版本', 'Oh My CPA Version'],
-  'sys.cpa_version': ['CPA 运行时版本', 'CPA Runtime Version'],
-  'sys.latest_version': ['上游最新版本', 'Upstream Latest Version'],
+  'sys.omc_version': ['Oh My CPA', 'Oh My CPA'],
+  'sys.cpa_version': ['CLIProxyAPI', 'CLIProxyAPI'],
+  'sys.current_version': ['当前运行版本', 'Running Version'],
+  'sys.latest_version': ['最新发布版本', 'Latest Release'],
+  'sys.version_unknown': ['未知', 'Unknown'],
   'sys.update_available': ['发现新版本：{version}', 'New version available: {version}'],
   'sys.is_latest': ['已是最新版本', 'Up to date'],
+  'sys.update_ahead': ['领先于最新发布', 'Ahead of latest release'],
+  'sys.indeterminate': ['无法比较版本', 'Comparison unavailable'],
+  'sys.reason_running_not_comparable': ['当前版本为开发或分支构建，无法比对', 'Running version is a development or fork build, comparison unavailable'],
+  'sys.reason_latest_not_comparable': ['最新发布标签不是有效版本号', 'Latest release tag is not a valid version'],
+  'sys.reason_no_releases': ['暂无已发布的版本', 'No releases published yet'],
+  'sys.reason_not_checked': ['尚未执行版本检查', 'Not checked yet'],
+  'sys.last_check_failed': ['检查失败（{time}）：{msg}', 'Check failed ({time}): {msg}'],
+  'sys.check_updates': ['检查更新', 'Check for Updates'],
+    'sys.check_updates_cached': ['刚刚检查过，显示已缓存的结果', 'Checked recently; showing the cached result'],
+'sys.check_updates_success': ['更新检查已完成', 'Update check completed'],
   'sys.checking_updates': ['正在检查更新…', 'Checking for updates…'],
-  'sys.topology_card': ['服务拓扑与组件健康', 'Service Topology & Health'],
-  'sys.component_cpa': ['CPA 代理网关', 'CPA Proxy Gateway'],
+    'sys.changelog_title': ['{product} 变更日志', '{product} change log'],
+'sys.view_changelog': ['变更日志 ({count})', 'Change Log ({count})'],
+  'sys.notes_unavailable': ['当前进程未持有该版本变更日志（进程重启后重置）', 'Release notes not held in process memory (reset on restart)'],
+  'sys.notes_not_held': ['内存暂未缓存日志正文，可访问上游仓库查看', 'Release notes not cached in memory; visit upstream repository'],
+  'sys.range_incomplete': ['上游版本历史过多，未拉取完整区间日志', 'Release history truncated; interval log is not complete'],
+  'sys.open_repo_link': ['打开 {repo} 仓库页面', 'Open {repo} repository page'],
+  'sys.view_release_on_github': ['在 GitHub 查看 {tag} 发布页面', 'View {tag} release on GitHub'],
+  'sys.changelog_in_range': ['待升级版本', 'Upgrade Target'],
+  'sys.no_changelog_entries': ['暂无变更日志条目', 'No change log entries available'],
+  'sys.image_link': ['图片链接', 'Image link'],
+
+  'sys.storage_card': ['SQLite 存储与空间', 'SQLite Storage & Footprint'],
+  'sys.storage_total': ['总存储占用', 'Total Storage Footprint'],
+  'sys.storage_main': ['主库文件', 'Main Database'],
+  'sys.storage_wal': ['WAL 写入日志', 'WAL Journal'],
+  'sys.storage_shm': ['SHM 共享内存', 'SHM Shared Memory'],
+  'sys.file_not_exist': ['未生成', 'Not present'],
+  'sys.journal_mode': ['日志模式', 'Journal Mode'],
+  'sys.schema_version': ['Schema 迁移版本', 'Schema Migration Version'],
+  'sys.used_bytes': ['已分配数据大小', 'Used Page Bytes'],
+
+  'sys.topology_card': ['组件健康', 'Component Health'],
+  'sys.component_cpa': ['CLIProxyAPI', 'CLIProxyAPI'],
   'sys.component_db': ['SQLite 数据库', 'SQLite Database'],
+  'sys.db_mode': ['日志模式：{mode}', 'Journal mode: {mode}'],
   'sys.component_collector': ['用量采集器', 'Usage Ingestion Collector'],
+  'sys.collector_status_active': ['运行中', 'Active'],
+  'sys.collector_status_disabled': ['已停用', 'Disabled'],
   'sys.cpa_latency': ['连接延迟：{ms}ms', 'Latency: {ms}ms'],
-  'sys.db_mode': ['模式：WAL 驱动', 'Mode: WAL driver'],
   'sys.collector_mode': ['模式：{mode} (缺口: {gaps})', 'Mode: {mode} (gaps: {gaps})'],
-  'sys.runtime_card': ['运行环境与资源指标', 'Runtime & Resource Metrics'],
-  'sys.runtime_go': ['Go 运行时', 'Go Runtime'],
-  'sys.runtime_os': ['操作系统 / 架构', 'OS / Architecture'],
-  'sys.runtime_uptime': ['运行时间', 'Uptime'],
-  'sys.runtime_goroutines': ['活动协程数', 'Active Goroutines'],
-  'sys.runtime_mem': ['内存占用 (Alloc)', 'Memory Alloc'],
-  'sys.diag_card': ['导出脱敏诊断包', 'Export Redacted Diagnostics'],
+
+
+
+  'sys.maintenance_card': ['数据库维护与诊断', 'Database Maintenance & Diagnostics'],
+  'sys.action_checkpoint': ['WAL 回收 (Checkpoint)', 'WAL Checkpoint'],
+  'sys.action_checkpoint_short': ['WAL 回收', 'WAL Checkpoint'],
+  'sys.action_vacuum': ['重建数据库 (VACUUM)', 'Rebuild Database (VACUUM)'],
+  'sys.action_vacuum_short': ['VACUUM 重建', 'VACUUM Rebuild'],
+  'sys.checkpoint_desc': ['先将 WAL 文件中的内容合并回主数据库，再截断 WAL 文件。', 'Merges the write-ahead log into the main database file, then truncates the log.'],
+  'sys.vacuum_desc': ['深度重组数据库文件并释放所有空闲数据页。需要临时磁盘空间。', 'Rebuilds the entire database file to reclaim unused free pages. Requires temporary disk space.'],
+  'sys.vacuum_confirm_title': ['确认执行数据库 VACUUM 重建？', 'Confirm Database VACUUM Rebuild?'],
+  'sys.vacuum_confirm_desc': ['VACUUM 将在独占锁下复制重组全库数据页。执行期间所有并发写入将被排队。', 'VACUUM rebuilds all pages under an exclusive lock. Concurrent writes will be queued until completed.'],
+  'sys.vacuum_required_label': ['预计所需临时空间', 'Estimated required space'],
+  'sys.vacuum_available_label': ['目录当前可用空间', 'Current available space'],
+  'sys.vacuum_disabled_reason': ['空间不足：{reason}', 'Insufficient space: {reason}'],
+  'sys.maintenance_started': ['维护任务 [{action}] 已启动，正在后台执行…', 'Maintenance task [{action}] started in background…'],
+  'sys.maintenance_in_progress': ['维护任务 [{action}] 正在执行中…', 'Maintenance task [{action}] is running…'],
+  'sys.maintenance_success': ['维护任务 [{action}] 执行成功', 'Maintenance task [{action}] completed successfully'],
+  'sys.maintenance_failed': ['维护任务 [{action}] 执行失败：{msg}', 'Maintenance task [{action}] failed: {msg}'],
+  'sys.maintenance_reclaimed': ['体积变化：{before} → {after}，净回收：{reclaimed}', 'Footprint: {before} → {after}, reclaimed: {reclaimed}'],
+    'sys.maintenance_incomplete_title': ['{action} 未完全完成', '{action} did not fully complete'],
+'sys.maintenance_incomplete_warning': ['任务已执行但未完全生效：{detail}', 'Task executed but did not fully complete: {detail}'],
+  'sys.maintenance_incomplete_default': ['操作被并发读取阻塞或未完全截断', 'Operation was blocked by concurrent readers or not fully truncated'],
+  'sys.maintenance_restart_notice': ['注：维护任务执行状态仅保留在进程内存中，服务重启后将自动清空。', 'Note: Maintenance job statuses are held in process memory only and reset on restart.'],
   'sys.diag_desc': ['生成包含当前版本、数据库元数据、脱敏审计记录与运行指标的 JSON 诊断包。严禁包含任何密钥、密码、令牌或私有 Auth File 内容。操作受审计。', 'Generate a JSON diagnostic bundle containing versions, DB metadata, redacted audits, and runtime metrics. Strictly excludes keys, secrets, tokens, or auth contents. Audited.'],
-  'sys.download_diag': ['下载诊断包', 'Download Diagnostics'],
+  'sys.download_diag': ['下载脱敏诊断包', 'Download Diagnostics'],
   'sys.download_success': ['诊断包已成功生成并下载', 'Diagnostics bundle downloaded successfully'],
   'sys.download_failed': ['生成诊断包失败：{msg}', 'Failed to generate diagnostics: {msg}'],
 
@@ -1434,6 +1629,15 @@ const DICT: Record<string, [string, string]> = {
   'plg.config_json_desc': ['请输入符合该插件规范的 JSON 配置格式：', 'Enter JSON configuration according to plugin specifications:'],
   'plg.config_saved': ['插件配置已保存', 'Plugin configuration saved'],
   'plg.config_invalid_json': ['配置内容必须是合法的 JSON 对象', 'Configuration must be a valid JSON object'],
+  'plg.config_duplicate_key': ['存在重复键 {key}', 'Duplicate key {key}'],
+  'plg.config_duplicate_key_desc': ['同一个对象中每个键只能出现一次，请删除重复的键后重试。', 'Each key may appear only once in a JSON object. Remove the duplicate key and try again.'],
+  'plg.config_valid': ['JSON 有效', 'Valid JSON'],
+  'plg.config_format': ['格式化', 'Format'],
+  'plg.config_preview': ['结构预览', 'Structure preview'],
+  'plg.config_top_level': ['{n} 个顶层字段', '{n} top-level field(s)'],
+  'plg.config_empty': ['空对象', 'Empty object'],
+  'plg.config_unsaved_title': ['放弃未保存的插件配置？', 'Discard unsaved plugin configuration?'],
+  'plg.config_unsaved_desc': ['当前配置尚未保存，关闭后修改会丢失。', 'The configuration has not been saved; closing will discard these changes.'],
   'plg.delete_confirm': ['确认卸载并删除该插件？此操作将记录审计日志。', 'Uninstall and remove this plugin? This action is audited.'],
   'plg.deleted': ['插件已卸载', 'Plugin uninstalled'],
   'plg.empty': ['暂无已安装的插件扩展', 'No installed plugins'],
@@ -1567,10 +1771,67 @@ const DICT: Record<string, [string, string]> = {
 
 export type TFunc = (key: string, vars?: Record<string, string | number>) => string;
 
+type Catalog = Readonly<Record<string, string>>;
+
+/**
+ * The catalogs loaded on demand.
+ *
+ * The base dictionary already carries two complete languages, but the additional
+ * catalogs are large enough that bundling them into the entry chunk would make every
+ * reader pay for languages they did not choose. Keeping the loaders here also means
+ * the registry remains the only place a language must be declared: when a switcher
+ * asks for one of these ids, this map supplies the catalog that makes it readable.
+ */
+const CATALOG_LOADERS: Partial<Record<Lang, () => Promise<Catalog>>> = {
+  'zh-Hant': () => import('./locales/zh-Hant').then((module) => module.ZH_HANT),
+  ms: () => import('./locales/ms').then((module) => module.MS),
+};
+
+const loadedCatalogs = new Map<Lang, Catalog>();
+const catalogPromises = new Map<Lang, Promise<Catalog>>();
+
+function isDeferredLanguage(lang: Lang): boolean {
+  return Boolean(CATALOG_LOADERS[lang]);
+}
+
+function loadCatalog(lang: Lang): Promise<Catalog> {
+  const loaded = loadedCatalogs.get(lang);
+  if (loaded) return Promise.resolve(loaded);
+  const existing = catalogPromises.get(lang);
+  if (existing) return existing;
+  const loader = CATALOG_LOADERS[lang];
+  if (!loader) return Promise.resolve({});
+  const pending = loader().then(
+    (catalog) => {
+      loadedCatalogs.set(lang, catalog);
+      catalogPromises.delete(lang);
+      return catalog;
+    },
+    (error: unknown) => {
+      // A failed load is not cached, so the failure a later attempt meets is the fetch's rather than
+      // this map's: the browser refuses to re-fetch a module whose import already failed in a
+      // document, which is why the recovery below is a reload and not a second click. Holding the
+      // rejection here anyway would leave the loader permanently disagreeing with itself.
+      catalogPromises.delete(lang);
+      throw error;
+    },
+  );
+  catalogPromises.set(lang, pending);
+  return pending;
+}
+
 export function makeT(lang: Lang): TFunc {
   return (key, vars) => {
     const entry = DICT[key];
-    let text = entry ? (lang === 'en' ? entry[1] : entry[0]) : key;
+    let text = key;
+    if (lang === 'zh') text = entry?.[0] ?? key;
+    else if (lang === 'en') text = entry?.[1] ?? key;
+    else {
+      // A deferred catalog can be incomplete while a deployment is rolling
+      // out. Fall back to the base dictionary rather than showing a raw key.
+      const fallbackIndex = lang === 'zh-Hant' ? 0 : 1;
+      text = loadedCatalogs.get(lang)?.[key] ?? entry?.[fallbackIndex] ?? key;
+    }
     if (vars) {
       for (const [name, value] of Object.entries(vars)) {
         text = text.split(`{${name}}`).join(String(value));
@@ -1582,44 +1843,117 @@ export function makeT(lang: Lang): TFunc {
 
 const LANG_KEY = 'omc-lang';
 
+/**
+ * The reading language the console falls back to when the stored one cannot be fetched.
+ *
+ * It is the same language `readInitialLang` picks for an unrecognized stored id, so a console that
+ * cannot read its stored preference still lands somewhere deliberate instead of nowhere.
+ */
+const FALLBACK_LANG: Lang = 'zh';
 function readInitialLang(): Lang {
   if (typeof window === 'undefined') return 'zh';
-  return window.localStorage.getItem(LANG_KEY) === 'en' ? 'en' : 'zh';
+  try {
+    const stored = window.localStorage.getItem(LANG_KEY);
+    return LANGUAGES.some((language) => language.id === stored) ? (stored as Lang) : 'zh';
+  } catch {
+    // Storage can be blocked by the browser or a sandboxed frame. The console
+    // still has to render its default reading language.
+    return 'zh';
+  }
 }
 
 interface I18nContextValue {
   lang: Lang;
   setLang: (lang: Lang) => void;
-  toggleLang: () => void;
   t: TFunc;
 }
 
 const I18nContext = React.createContext<I18nContextValue>({
   lang: 'zh',
   setLang: () => undefined,
-  toggleLang: () => undefined,
   t: makeT('zh'),
 });
 
 export const I18nProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [lang, setLang] = React.useState<Lang>(readInitialLang);
+  const [initialLang] = React.useState<Lang>(readInitialLang);
+  // Two languages, because a reader's choice and what the console can print are not the same thing
+  // while a catalog is on its way. `requestedLang` is what they picked and what gets stored; `lang` is
+  // what is rendered, and it is `null` only until the chosen catalog arrives - so the first paint is
+  // never a reading language the reader did not ask for.
+  const [requestedLang, setRequestedLang] = React.useState<Lang>(initialLang);
+  const [lang, setLangState] = React.useState<Lang | null>(() => (isDeferredLanguage(initialLang) ? null : initialLang));
+  const languageRequest = React.useRef(0);
 
   React.useEffect(() => {
-    window.localStorage.setItem(LANG_KEY, lang);
-    document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
-  }, [lang]);
+    if (!isDeferredLanguage(initialLang)) return;
+    let cancelled = false;
+    loadCatalog(initialLang).then(
+      () => {
+        if (!cancelled && languageRequest.current === 0) setLangState(initialLang);
+      },
+      () => {
+        // A stored catalog whose chunk cannot be fetched - a tab older than the deployment serving it
+        // is the usual reason - leaves the console in the default reading language rather than blank.
+        // That is the whole point: a blank page is a console with nothing on it to act from, and the
+        // settings page is where a reader picks a language that is still there. The stored preference
+        // is left alone, so the next load returns them to the language they chose.
+        if (!cancelled && languageRequest.current === 0) setLangState(FALLBACK_LANG);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [initialLang]);
+
+  const setLang = React.useCallback((next: Lang) => {
+    // Every switch invalidates an in-flight one, deferred or not, so a catalog that lands late cannot
+    // take the console back to a language the reader has already left.
+    const request = languageRequest.current + 1;
+    languageRequest.current = request;
+    setRequestedLang(next);
+    if (!isDeferredLanguage(next)) {
+      setLangState(next);
+      return;
+    }
+    // A switch to a language whose catalog has not arrived keeps the current reading until it does. A
+    // fetch that fails leaves the console where it was and stores nothing: the browser will not
+    // re-fetch the module in this document (see `loadCatalog`), so the language arrives on the next
+    // load - which is the reload a tab this stale needs anyway - and never as an unhandled rejection.
+    loadCatalog(next).then(
+      () => {
+        if (languageRequest.current === request) setLangState(next);
+      },
+      () => undefined,
+    );
+  }, []);
+
+  const activeLang = lang ?? FALLBACK_LANG;
+
+  React.useEffect(() => {
+    if (lang === null) return;
+    // The document's own language is what is *rendered* - a fallback is still what a screen reader
+    // has to read - while only the reader's own choice is stored. Writing the fallback would replace
+    // the preference the next successful load is meant to restore.
+    document.documentElement.lang = languageLocale(lang);
+    if (lang === requestedLang) {
+      try {
+        window.localStorage.setItem(LANG_KEY, lang);
+      } catch {
+        // A blocked storage backend must not break a language switch.
+      }
+    }
+  }, [lang, requestedLang]);
 
   const value = React.useMemo<I18nContextValue>(
     () => ({
-      lang,
+      lang: activeLang,
       setLang,
-      toggleLang: () => setLang((current) => (current === 'zh' ? 'en' : 'zh')),
-      t: makeT(lang),
+      t: makeT(activeLang),
     }),
-    [lang],
+    [activeLang, setLang],
   );
 
-  return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
+  return lang === null ? null : <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 };
 
 export function useI18n(): I18nContextValue {

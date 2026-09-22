@@ -11,8 +11,17 @@ export const FAKE_SECOND_PROVIDER_SECRET = 'omc-e2e-provider-secret-second';
 export const FAKE_ACCOUNT_SECRET = 'omc-e2e-account-secret';
 export const FAKE_CLIENT_SECRET = 'omc-e2e-client-secret';
 
+/**
+ * The inline artwork the `iflow-auth` fixture plugin publishes for its OAuth provider.
+ *
+ * Exported because the acceptance flows assert that a plugin-owned provider draws *this*
+ * mark: "an <img> loaded" would also pass for a catalog mark, a neighbouring plugin's
+ * logo, or the console's own fallback, none of which is the claim being made.
+ */
+export const FAKE_PLUGIN_LOGO_DATA_URL = 'data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 24 24\'%3E%3Crect width=\'24\' height=\'24\' rx=\'6\' fill=\'%234F46E5\'/%3E%3Ctext x=\'12\' y=\'16\' font-size=\'9\' font-family=\'monospace\' fill=\'white\' text-anchor=\'middle\'%3EiF%3C/text%3E%3C/svg%3E';
+
 function json(response, status, body, headers = {}) {
-  response.writeHead(status, { 'Content-Type': 'application/json', 'X-CPA-Version': '7.2.146-e2e', ...headers });
+  response.writeHead(status, { 'Content-Type': 'application/json', 'X-CPA-Version': '7.3.5-e2e', ...headers });
   response.end(JSON.stringify(body));
 }
 
@@ -23,9 +32,10 @@ export function createFakeCpaServer({ managementKey = FAKE_CPA_MANAGEMENT_KEY } 
       id: 'auth-e2e-1', auth_index: 'auth-index-e2e-1', name: 'fixture-auth.json', type: 'codex', provider: 'codex',
       label: 'Primary fixture', status: 'ok', disabled: false, unavailable: false, runtime_only: false,
       email: 'owner@example.test', account_type: 'oauth', account: FAKE_ACCOUNT_SECRET,
-      id_token: { chatgpt_account_id: 'chatgpt-e2e-account', chatgpt_subscription_active_until: Math.floor((Date.now() + 24 * 86400000) / 1000), plan_type: 'pro' },
+      id_token: { chatgpt_account_id: 'chatgpt-e2e-account', chatgpt_subscription_active_until: Math.floor((Date.now() - 3 * 86400000) / 1000), plan_type: 'pro' },
       success: 12, failed: 1, recent_requests: [{ time: '2026-09-01T12:00:00Z', success: 12, failed: 1 }],
       models: [{ id: 'gpt-e2e', display_name: 'GPT E2E' }], priority: 1, weight: 1, note: 'deterministic fixture',
+      prefix: 'team-a', proxy_url: '', disable_cooling: false, websockets: true, using_api: false, excluded_models: [],
     },
     {
       id: 'auth-e2e-2', auth_index: 'auth-index-e2e-2', name: 'claude-fixture.json', type: 'claude', provider: 'claude',
@@ -52,8 +62,37 @@ export function createFakeCpaServer({ managementKey = FAKE_CPA_MANAGEMENT_KEY } 
       label: 'Virtual fixture', status: 'ok', disabled: false, unavailable: false, runtime_only: true,
       success: 0, failed: 0, models: [], priority: 0, weight: 1,
     },
+    // A second codex credential whose live subscription read this fixture refuses, so
+    // the quota card's unverified-snapshot rendering is reached by an ordinary run
+    // rather than only when a real provider read happens to fail. Its id_token window
+    // is deliberately in the past, which is the state the report described.
+    {
+      id: 'auth-e2e-8', auth_index: 'auth-index-e2e-8', name: 'codex-snapshot-only.json', type: 'codex', provider: 'codex',
+      label: 'Snapshot-only fixture', status: 'ok', disabled: false, unavailable: false, runtime_only: false,
+      email: 'snapshot@example.test', account_type: 'oauth',
+      id_token: { chatgpt_account_id: 'chatgpt-e2e-snapshot', chatgpt_subscription_active_until: Math.floor((Date.now() - 3 * 86400000) / 1000), plan_type: 'plus' },
+      success: 1, failed: 0, models: [{ id: 'gpt-e2e', display_name: 'GPT E2E' }], priority: 1, weight: 1,
+    },
+    // One credential per brand-mark path the provider filters have to draw: a
+    // built-in the console's catalog carries (Devin), and one owned by a plugin
+    // (the `iflow-auth` fixture below), which draws the plugin's own logo.
+    {
+      id: 'auth-e2e-6', auth_index: 'auth-index-e2e-6', name: 'devin-fixture.json', type: 'devin', provider: 'devin',
+      label: 'Devin fixture', status: 'ok', disabled: false, unavailable: false, runtime_only: false,
+      email: 'devin-fixture@example.test', account_type: 'oauth',
+      success: 1, failed: 0, models: [], priority: 1, weight: 1,
+    },
+    {
+      id: 'auth-e2e-7', auth_index: 'auth-index-e2e-7', name: 'iflow-fixture.json', type: 'iflow', provider: 'iflow',
+      label: 'iFlow fixture', status: 'ok', disabled: false, unavailable: false, runtime_only: false,
+      account_type: 'oauth', success: 1, failed: 0, models: [], priority: 1, weight: 1,
+    },
   ];
   let authFiles = JSON.parse(JSON.stringify(initialAuthFiles));
+  let oauthModelAliases = {
+    codex: [{ name: 'gpt-e2e', alias: 'gpt-e2e-preview', fork: true, 'force-mapping': false, 'display-name': 'GPT E2E Preview' }],
+    claude: [{ name: 'claude-3-5-sonnet', alias: 'sonnet-latest' }],
+  };
 
   // The codex API-key list is stateful for the same reason authFiles is: the
   // provider enable/disable flow writes it and then re-reads it, so a fixture
@@ -66,6 +105,16 @@ export function createFakeCpaServer({ managementKey = FAKE_CPA_MANAGEMENT_KEY } 
     { 'api-key': FAKE_SECOND_PROVIDER_SECRET, 'auth-index': 'codex-e2e-second', 'base-url': 'https://provider-second.example.test', models: [{ name: 'gpt-e2e-second', alias: 'gpt-e2e-second' }] },
   ];
   let codexProviders = JSON.parse(JSON.stringify(initialCodexProviders));
+
+  // The Meta Muse credential list is served so the console's family wiring is
+  // observable in the browser: a family that reaches the API but not the page
+  // renders as a row without its protocol label. It is stateful for the same
+  // reason codex is - an acknowledged write that is not stored cannot be told
+  // apart from a lost one.
+  const initialMetaProviders = [
+    { 'api-key': FAKE_PROVIDER_SECRET, 'auth-index': 'meta-e2e', 'base-url': 'https://api.meta.ai/v1' },
+  ];
+  let metaProviders = JSON.parse(JSON.stringify(initialMetaProviders));
 
   // The gateway client keys are stateful for the same reason authFiles is: the
   // key-management page renders its list from `/config.yaml` but rewrites it
@@ -95,8 +144,50 @@ export function createFakeCpaServer({ managementKey = FAKE_CPA_MANAGEMENT_KEY } 
       json(response, 200, { files: authFiles });
       return;
     }
+    if (request.method === 'GET' && path === '/oauth-model-alias') {
+      json(response, 200, { 'oauth-model-alias': oauthModelAliases });
+      return;
+    }
+    if (request.method === 'PATCH' && path === '/oauth-model-alias') {
+      const bodyText = Buffer.concat(chunks).toString('utf8');
+      let payload = {};
+      try { payload = JSON.parse(bodyText || '{}'); } catch {}
+      const channel = String(payload.channel ?? '').trim().toLowerCase();
+      if (!channel) {
+        json(response, 400, { error: 'invalid channel' });
+        return;
+      }
+      if (Array.isArray(payload.aliases) && payload.aliases.length > 0) {
+        oauthModelAliases[channel] = payload.aliases;
+      } else {
+        delete oauthModelAliases[channel];
+      }
+      json(response, 200, { status: 'ok' });
+      return;
+    }
     if (request.method === 'GET' && path === '/auth-files/models') {
       json(response, 200, { models: [{ id: 'gpt-e2e', display_name: 'GPT E2E' }] });
+      return;
+    }
+    if (request.method === 'GET' && path === '/auth-files/download') {
+      const target = authFiles.find(f => f.name === url.searchParams.get('name'));
+      if (!target) {
+        json(response, 404, { error: 'auth file not found' });
+        return;
+      }
+      json(response, 200, {
+        type: target.type,
+        prefix: target.prefix ?? '',
+        proxy_url: target.proxy_url ?? '',
+        priority: target.priority ?? 0,
+        weight: target.weight ?? 1,
+        disable_cooling: target.disable_cooling ?? false,
+        websockets: target.websockets ?? false,
+        using_api: target.using_api ?? false,
+        expired: target.expired ?? '',
+        note: target.note ?? '',
+        excluded_models: target.excluded_models ?? [],
+      });
       return;
     }
     if (request.method === 'PATCH' && path === '/auth-files/status') {
@@ -120,6 +211,13 @@ export function createFakeCpaServer({ managementKey = FAKE_CPA_MANAGEMENT_KEY } 
         if (payload.priority !== undefined) target.priority = payload.priority;
         if (payload.weight !== undefined) target.weight = payload.weight;
         if (payload.note !== undefined) target.note = payload.note;
+        if (payload.prefix !== undefined) target.prefix = payload.prefix;
+        if (payload.proxy_url !== undefined) target.proxy_url = payload.proxy_url;
+        if (payload.disable_cooling !== undefined) target.disable_cooling = payload.disable_cooling;
+        if (payload.websockets !== undefined) target.websockets = payload.websockets;
+        if (payload.using_api !== undefined) target.using_api = payload.using_api;
+        if (payload.excluded_models !== undefined) target.excluded_models = payload.excluded_models;
+        if (payload.expired !== undefined) target.expired = payload.expired;
       }
       json(response, 200, { status: 'ok' });
       return;
@@ -173,7 +271,7 @@ export function createFakeCpaServer({ managementKey = FAKE_CPA_MANAGEMENT_KEY } 
       return;
     }
     if (request.method === 'GET' && path === '/config.yaml') {
-      response.writeHead(200, { 'Content-Type': 'application/yaml', 'X-CPA-Version': '7.2.146-e2e' });
+      response.writeHead(200, { 'Content-Type': 'application/yaml', 'X-CPA-Version': '7.3.5-e2e' });
       response.end(renderConfigYaml());
       return;
     }
@@ -214,10 +312,23 @@ export function createFakeCpaServer({ managementKey = FAKE_CPA_MANAGEMENT_KEY } 
       return;
     }
     if (request.method === 'GET' && path === '/latest-version') {
-      json(response, 200, { version: '7.2.146-e2e' });
+      json(response, 200, { version: '7.3.5-e2e' });
       return;
     }
     if (request.method === 'GET' && path.endsWith('-auth-url')) {
+      const provider = path.replace(/^\//, '').replace(/-auth-url$/, '');
+      // Device-code providers answer with their flow label and the short code
+      // the operator confirms on the vendor page, as CPA does.
+      if (provider === 'meta' || provider === 'kimi') {
+        json(response, 200, {
+          url: 'https://auth.example.test/oauth?session=e2e',
+          state: 'e2e-state',
+          flow: 'device',
+          user_code: 'E2E-CODE-1',
+          expires_in: 900,
+        });
+        return;
+      }
       json(response, 200, { url: 'https://auth.example.test/oauth?session=e2e', state: 'e2e-state' });
       return;
     }
@@ -233,7 +344,10 @@ export function createFakeCpaServer({ managementKey = FAKE_CPA_MANAGEMENT_KEY } 
       return;
     }
     if (request.method === 'DELETE' && path === '/oauth-session') {
-      json(response, 200, { status: 'ok' });
+      const state = url.searchParams.get('state') || url.searchParams.get('session_id') || '';
+      // A session CPA could not cancel (already finished or expired) reports
+      // cancelled:false rather than pretending it was abandoned.
+      json(response, 200, { status: 'ok', cancelled: state !== 'already-done' });
       return;
     }
     if (request.method === 'POST' && path === '/oauth-callback') {
@@ -261,6 +375,30 @@ export function createFakeCpaServer({ managementKey = FAKE_CPA_MANAGEMENT_KEY } 
         body = JSON.parse(requests[requests.length - 1].body || '{}');
       } catch {}
       const targetURL = body.url || '';
+      // The subscription probe is scoped per credential. One codex credential answers
+      // it (exercising a live read) and the other reports the upstream failure, so the
+      // unverified-snapshot path is covered in the same run.
+      if (targetURL.includes('backend-api/subscriptions')) {
+        if ((body.auth_index || '') === 'auth-index-e2e-8') {
+          json(response, 200, {
+            status_code: 503,
+            header: { 'content-type': ['application/json'] },
+            body: { error: 'subscription read unavailable' },
+          });
+          return;
+        }
+        json(response, 200, {
+          status_code: 200,
+          header: { 'content-type': ['application/json'] },
+          body: {
+            plan_type: 'pro',
+            active_start: new Date(Date.now() - 21 * 86400000).toISOString(),
+            active_until: new Date(Date.now() + 21 * 86400000).toISOString(),
+            will_renew: false,
+          },
+        });
+        return;
+      }
       if (targetURL.includes('rate-limit-reset-credits/consume') || targetURL.includes('reset_credits/consume')) {
         json(response, 200, { status_code: 200, header: { 'content-type': ['application/json'] }, body: { status: 'ok' } });
         return;
@@ -378,7 +516,7 @@ export function createFakeCpaServer({ managementKey = FAKE_CPA_MANAGEMENT_KEY } 
           registered: true,
           supports_oauth: true,
           oauth_provider: 'iflow',
-          logo: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%234F46E5'/%3E%3Ctext x='12' y='16' font-size='9' font-family='monospace' fill='white' text-anchor='middle'%3EiF%3C/text%3E%3C/svg%3E",
+          logo: FAKE_PLUGIN_LOGO_DATA_URL,
           permissions: ['oauth'],
         },
       ] });
@@ -414,6 +552,23 @@ export function createFakeCpaServer({ managementKey = FAKE_CPA_MANAGEMENT_KEY } 
     }
     if (request.method === 'GET' && ['/claude-api-key', '/gemini-api-key', '/oauth-excluded-models'].includes(path)) {
       json(response, 200, {});
+      return;
+    }
+    if (request.method === 'GET' && path === '/meta-api-key') {
+      json(response, 200, { 'meta-api-key': metaProviders });
+      return;
+    }
+    if (request.method === 'PUT' && path === '/meta-api-key') {
+      let parsed = null;
+      try {
+        parsed = JSON.parse(requests[requests.length - 1].body || '[]');
+      } catch { /* keep the stored list */ }
+      if (Array.isArray(parsed)) {
+        metaProviders = parsed;
+      } else if (Array.isArray(parsed?.['meta-api-key'])) {
+        metaProviders = parsed['meta-api-key'];
+      }
+      json(response, 200, { status: 'ok' });
       return;
     }
     // A config write replaces the whole document, so the fixture stores it and

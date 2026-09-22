@@ -21,13 +21,15 @@ const (
 	PreferenceUsageEventsView    = "usage_events_view"
 	PreferenceUsageEventsColumns = "usage_events_columns"
 
-	// PreferenceTokenStyle and PreferenceModelView are Oh My CPA's own display
-	// settings: how token counts are abbreviated across the console and how the
-	// dashboard's model panels group their series (by call point or by upstream
-	// model). They are preferences rather than configuration because they
-	// describe how the operator reads the data, not how anything is served.
+	// PreferenceTokenStyle, PreferenceModelView and PreferenceTheme are Oh My CPA's own
+	// display settings: how token counts are abbreviated across the console, how the
+	// dashboard's model panels group their series (by call point or by upstream model), and
+	// which palette each theme mode uses along with any palette the operator authored. They
+	// are preferences rather than configuration because they describe how the operator reads
+	// the console, not how anything is served.
 	PreferenceTokenStyle = "omc_token_style"
 	PreferenceModelView  = "omc_models_view"
+	PreferenceTheme      = "omc_theme"
 )
 
 // MaxPreferenceValueBytes bounds a stored value. Preferences are small UI
@@ -96,6 +98,48 @@ func (r *Repository) PutPreference(ctx context.Context, key, value string) error
 		ON CONFLICT(pref_key) DO UPDATE SET pref_value = excluded.pref_value, updated_at_ms = excluded.updated_at_ms`,
 		key, value, time.Now().UTC().UnixMilli()); err != nil {
 		return fmt.Errorf("write preference %q: %w", key, err)
+	}
+	return nil
+}
+
+// PutPreferences stores a set of preferences in one transaction. Callers use it
+// when several preference documents describe one operator action: a failure or
+// cancellation must leave the whole set at its previous revision rather than
+// exposing a half-applied overlay.
+func (r *Repository) PutPreferences(ctx context.Context, values map[string]string) error {
+	if r == nil || r.SQL() == nil {
+		return errors.New("repository is not initialized")
+	}
+	for key, value := range values {
+		if !validPreferenceKey(key) {
+			return fmt.Errorf("invalid preference key %q", key)
+		}
+		if len(value) > MaxPreferenceValueBytes {
+			return fmt.Errorf("preference %q exceeds %d bytes", key, MaxPreferenceValueBytes)
+		}
+	}
+	if len(values) == 0 {
+		return nil
+	}
+
+	tx, err := r.SQL().BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin preference transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	now := time.Now().UTC().UnixMilli()
+	for key, value := range values {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO ui_preferences (pref_key, pref_value, updated_at_ms)
+			VALUES (?, ?, ?)
+			ON CONFLICT(pref_key) DO UPDATE SET pref_value = excluded.pref_value, updated_at_ms = excluded.updated_at_ms`,
+			key, value, now); err != nil {
+			return fmt.Errorf("write preference %q: %w", key, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit preference transaction: %w", err)
 	}
 	return nil
 }

@@ -43,6 +43,8 @@ const SHELL_PATHS = [
  */
 const DASHBOARD_SCENARIOS = [
   'dashboard-charts',
+  'dashboard-chart-motion',
+  'dashboard-rolling-readouts',
   'dashboard-model-panels',
   'dashboard-model-panels-states',
   'dashboard-model-panels-failure',
@@ -51,6 +53,7 @@ const DASHBOARD_SCENARIOS = [
   'dashboard-heatmap-mobile',
   'dashboard-heatmap-pruned',
   'dashboard-heatmap-error',
+  'provider-rate-marks',
 ];
 
 /**
@@ -75,6 +78,7 @@ const SCENARIO_PATHS = [
       'refresh-sequencing',
       'search-dev-server',
       'request-list-interactions',
+      'overlay-back',
     ],
   },
   {
@@ -86,15 +90,92 @@ const SCENARIO_PATHS = [
       'request-list-interactions',
     ],
   },
+  // The system page renders a release's Markdown body, which is untrusted remote text. The
+  // scenario that belongs to it asserts the two things only an engine can: that no element or
+  // inline handler from the body is executed, and that the page fetches nothing from a host the
+  // body names. A change to the page, or to the Markdown renderer it imports, moves that claim.
+  {
+    prefix: 'web/src/pages/SystemPage',
+    scenarios: ['system-information', 'system-information-narrow'],
+  },
+  // The overlay history layer and everything it is wired into. Named as one rule because the
+  // claim is about the layer plus a representative overlay of each kind: the navigation sheet
+  // from the shell, the request detail and filter drawers from the request list, and the
+  // provider editor. A change to the hook itself moves all of them.
+  {
+    prefix: 'web/src/hooks/useOverlayHistory',
+    scenarios: ['overlay-back'],
+  },
+  {
+    prefix: 'web/src/hooks/overlayHistory',
+    scenarios: ['overlay-back'],
+  },
+  // The console's global stylesheet is already a shared path, and the touch rules live in it, so
+  // any change to the shell selects the touch scenario too. Named here rather than folded into
+  // SHELL_PATHS because it is about the rules those files carry, not about every scenario.
+  {
+    prefix: 'web/src/hooks/useIsPhoneViewport',
+    scenarios: ['phone-lists', 'touch-ergonomics'],
+  },
+  {
+    prefix: 'web/src/components/common/PhoneRow',
+    scenarios: ['phone-lists', 'touch-ergonomics'],
+  },
+  // The list surfaces whose phone rendering ADR 0012 introduced, and the shared pieces that
+  // rendering is derived from: a change to either reaches every one of them.
+  {
+    prefix: 'web/src/components/common/phoneRowFields',
+    scenarios: ['phone-lists'],
+  },
+  {
+    prefix: 'web/src/components/keys/',
+    scenarios: ['phone-lists'],
+  },
   // The provider console and its icon picker: the drawer/modal stacking assertion
-  // is about those two overlays specifically.
+  // is about those two overlays specifically, picking a mark from the picker is the
+  // page's own write path, and the table is where the phone rendering lives (ADR 0012).
+  // A rule that named only the first two would let a change to the provider phone row
+  // run no scenario that covers it - which is the silent omission this planner exists to
+  // prevent, and the reason its own test pins this mapping.
   {
     prefix: 'web/src/components/IconPickerModal',
-    scenarios: ['icon-picker-stacking'],
+    scenarios: ['icon-picker-stacking', 'provider-icon-pick'],
   },
   {
     prefix: 'web/src/pages/ProvidersPage',
-    scenarios: ['icon-picker-stacking'],
+    scenarios: ['icon-picker-stacking', 'provider-icon-pick', 'phone-lists', 'overlay-back'],
+  },
+  // The provider console's own modules: the list table, the editor drawer, the
+  // writes and the icon overlay. The page renders nothing but these, so a change
+  // to any of them reaches exactly what a change to the page reaches - and the
+  // drawer is one of the two overlays the stacking assertion is about.
+  {
+    prefix: 'web/src/components/providers/',
+    scenarios: ['icon-picker-stacking', 'provider-icon-pick', 'phone-lists', 'overlay-back'],
+  },
+  // The remaining list surfaces ADR 0012 converted. Each renders rows on a phone and a table
+  // otherwise, and `phone-lists` is the scenario that reads both renderings of each; without a
+  // rule they fall through to "an unrecognised frontend path widens the plan", which is safe but
+  // runs all 21 scenarios for a one-line change to a page a single scenario covers.
+  {
+    prefix: 'web/src/pages/PluginsPage',
+    scenarios: ['phone-lists'],
+  },
+  {
+    prefix: 'web/src/pages/PluginStorePage',
+    scenarios: ['phone-lists'],
+  },
+  {
+    prefix: 'web/src/pages/pricing/',
+    scenarios: ['phone-lists'],
+  },
+  {
+    prefix: 'web/src/pages/LogsPage',
+    scenarios: ['phone-lists'],
+  },
+  {
+    prefix: 'web/src/pages/CapabilityPlaceholderPage',
+    scenarios: ['phone-lists'],
   },
   // The dashboard: the sparkline marks its tiles draw and the daily-token calendar
   // beneath them. Both live on this page, and the page is what the scenarios load,
@@ -104,8 +185,20 @@ const SCENARIO_PATHS = [
     scenarios: DASHBOARD_SCENARIOS,
   },
   {
+    prefix: 'web/src/charts/chartMotion',
+    scenarios: ['dashboard-charts', 'dashboard-chart-motion'],
+  },
+  {
+    prefix: 'web/src/hooks/usePrefersReducedMotion',
+    scenarios: DASHBOARD_SCENARIOS,
+  },
+  {
     prefix: 'web/src/charts/',
-    scenarios: ['dashboard-charts'],
+    // Every scenario that reads a mark's paint: the KPI tiles' sparkline, the model panels' trend and
+    // ring - whose chrome ink is asserted in both themes - and the marks' shared palette. A chart file
+    // that only one panel imports still selects both, because which file a mark's ink comes from is not
+    // something this planner can see; over-selecting is the side this file is required to err on.
+    scenarios: ['dashboard-charts', 'dashboard-model-panels'],
   },
   // The dashboard's own panels. Both scenarios read the page, so a panel change
   // reaches both: the heatmap is a sibling of the tiles, not a child of a chart.
@@ -135,11 +228,17 @@ const SCENARIO_PATHS = [
     // planner treats as a green run that proved nothing - so the grid and the request list belong
     // here exactly as the panels do.
     scenarios: [
-      'omc-settings', 'dashboard-charts', 'dashboard-model-panels', 'dashboard-model-panels-states',
-      'dashboard-model-panels-failure', 'dashboard-model-panels-empty',
-      'dashboard-heatmap', 'dashboard-heatmap-pruned', 'dashboard-heatmap-mobile', 'dashboard-heatmap-error',
-      'column-alignment', 'request-list-interactions',
+      ...DASHBOARD_SCENARIOS,
+      'omc-settings', 'column-alignment', 'request-list-interactions',
     ],
+  },
+  {
+    // The animated shape of a reading: the contract every readout on the dashboard's KPI tiles is
+    // built from. Only those tiles construct one, so the dashboard scenarios and the OMC settings
+    // scenario - which reads the same tiles back when it asserts the unit style they print in - are
+    // what a change here can reach.
+    prefix: 'web/src/types/rollingNumber',
+    scenarios: ['omc-settings', ...DASHBOARD_SCENARIOS],
   },
   {
     prefix: 'web/src/hooks/usePreference',
@@ -169,13 +268,23 @@ const FRONTEND_SOURCE = 'web/src/';
 const PROBE_FRAMEWORK = [
   'scripts/acceptance/probe.mjs',
   'scripts/acceptance/scenarios.mjs',
+  // The scenario implementations. They are the claims themselves rather than the
+  // runner, but a change to one of them is exactly as unplaceable as a change to
+  // the registry that orders them: the planner cannot tell from a filename which
+  // scenario a helper two files away is shared with. Enumerating the modules would
+  // also mean a new module silently selecting nothing until someone remembered to
+  // list it, which is the failure this whole function exists to prevent.
+  'scripts/acceptance/probes/',
   'scripts/acceptance/check-ui-plan.mjs',
   'scripts/browser-probes.mjs',
   'scripts/check-ui.mjs',
 ];
 
 export function isProbeFramework(file) {
-  return PROBE_FRAMEWORK.includes(file);
+  // Prefixes rather than exact paths, so a directory can be named once and a module
+  // added to it stays covered. A file the list names exactly is matched by the same
+  // rule.
+  return PROBE_FRAMEWORK.some((prefix) => file.startsWith(prefix));
 }
 
 export function isFrontendSource(file) {

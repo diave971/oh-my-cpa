@@ -46,12 +46,17 @@ test('the four request-records concerns select only their own scenarios', () => 
 test('a dashboard change selects every dashboard scenario', () => {
   // Registry order, which is the order the plan preserves and the order `--list` prints.
   const all = [
-    'dashboard-charts', 'dashboard-model-panels', 'dashboard-model-panels-states',
-    'dashboard-model-panels-failure', 'dashboard-model-panels-empty',
-    'dashboard-heatmap', 'dashboard-heatmap-pruned', 'dashboard-heatmap-mobile', 'dashboard-heatmap-error',
+    'dashboard-charts', 'provider-rate-marks', 'dashboard-chart-motion', 'dashboard-rolling-readouts',
+    'dashboard-model-panels', 'dashboard-model-panels-states', 'dashboard-model-panels-failure',
+    'dashboard-model-panels-empty', 'dashboard-heatmap', 'dashboard-heatmap-pruned',
+    'dashboard-heatmap-mobile', 'dashboard-heatmap-error',
   ];
   assert.deepEqual(planFor('web/src/pages/DashboardPage.tsx'), all);
   assert.deepEqual(planFor('web/src/components/dashboard/TokenHeatmap.tsx'), all);
+  // The readout contract is a panel of the same page, and the OMC settings scenario reads the same
+  // tiles back when it asserts the unit style they print in - so this path reaches one scenario more
+  // than the page's own rule does.
+  assert.deepEqual(planFor('web/src/types/rollingNumber.ts'), ['omc-settings', ...all]);
   // The strip's own layout and ramp logic is only read by the heatmap scenarios, and
   // the phone layout is one of them: a change to the cell geometry is exactly what
   // breaks the narrow viewport.
@@ -71,6 +76,7 @@ test('the shared token layer selects every surface that renders it', () => {
   for (const id of [
     'omc-settings',
     'dashboard-charts',
+    'dashboard-rolling-readouts',
     'dashboard-model-panels',
     'dashboard-heatmap',
     'dashboard-heatmap-mobile',
@@ -89,9 +95,22 @@ test('the shared token layer selects every surface that renders it', () => {
   );
 });
 
-test('a provider-console change selects only the icon-picker scenario', () => {
-  assert.deepEqual(planFor('web/src/pages/ProvidersPage.tsx'), ['icon-picker-stacking']);
-  assert.deepEqual(planFor('web/src/components/IconPickerModal.tsx'), ['icon-picker-stacking']);
+test('a provider-console change selects only the provider-console scenarios', () => {
+  // `phone-lists` is in both: the provider table is one of the surfaces ADR 0012 renders as rows on
+  // a phone, so a change to it must run the scenario that reads both of its renderings.
+  assert.deepEqual(planFor('web/src/pages/ProvidersPage.tsx'), ['icon-picker-stacking', 'provider-icon-pick', 'overlay-back', 'phone-lists']);
+  assert.deepEqual(planFor('web/src/components/IconPickerModal.tsx'), ['icon-picker-stacking', 'provider-icon-pick']);
+  // The page renders the console's own modules rather than carrying them, so a
+  // change to one of those has to select the same scenarios the page does - the
+  // drawer is one of the two overlays the stacking claim is about, and an
+  // unplaced path here would widen instead of narrowing.
+  for (const file of [
+    'web/src/components/providers/ProviderEditorDrawer.tsx',
+    'web/src/components/providers/ProviderTable.tsx',
+    'web/src/components/providers/useProviderManagement.ts',
+  ]) {
+    assert.deepEqual(planFor(file), ['icon-picker-stacking', 'provider-icon-pick', 'overlay-back', 'phone-lists'], file);
+  }
 });
 
 test('the shared layer widens the plan to every scenario', () => {
@@ -125,6 +144,8 @@ test('a change to the probe framework itself widens the plan', () => {
   for (const file of [
     'scripts/acceptance/probe.mjs',
     'scripts/acceptance/scenarios.mjs',
+    'scripts/acceptance/probes/dashboardCharts.mjs',
+    'scripts/acceptance/probes/usageRecords.mjs',
     'scripts/acceptance/check-ui-plan.mjs',
     'scripts/browser-probes.mjs',
     'scripts/check-ui.mjs',
@@ -175,9 +196,11 @@ test('a mixed change unions the narrow plans without widening', () => {
   // Two placed paths union; only an *unplaced* one widens. This is the distinction
   // that keeps a two-page change from running everything.
   assert.deepEqual(plan.ids.sort(), [
-    'dashboard-charts', 'dashboard-heatmap', 'dashboard-heatmap-error', 'dashboard-heatmap-mobile',
-    'dashboard-heatmap-pruned', 'dashboard-model-panels', 'dashboard-model-panels-empty',
-    'dashboard-model-panels-failure', 'dashboard-model-panels-states', 'icon-picker-stacking',
+    'dashboard-chart-motion', 'dashboard-charts', 'dashboard-heatmap', 'dashboard-heatmap-error',
+    'dashboard-heatmap-mobile', 'dashboard-heatmap-pruned', 'dashboard-model-panels',
+    'dashboard-model-panels-empty', 'dashboard-model-panels-failure', 'dashboard-model-panels-states',
+    'dashboard-rolling-readouts', 'icon-picker-stacking', 'overlay-back', 'phone-lists',
+    'provider-icon-pick', 'provider-rate-marks',
   ]);
 });
 
@@ -193,6 +216,10 @@ test('no scenario id is selected by a path that cannot affect it', () => {
   // and vice versa. If a rule is ever widened by accident, this notices.
   const charts = new Set(planFor('web/src/charts/chartTheme.ts'));
   assert.equal(charts.has('request-list-interactions'), false);
+  // Positive control for the same rule: the model panels' trend and ring are chart files too, so a
+  // change under `charts/` has to reach the scenario that reads their paint. A rule that mapped the
+  // directory to the KPI tile scenario alone would leave the panel mark unverified.
+  assert.equal(charts.has('dashboard-model-panels'), true);
   const rows = new Set(planFor('web/src/components/usage/RequestRow.tsx'));
   assert.equal(rows.has('dashboard-charts'), false);
   assert.equal(rows.has('icon-picker-stacking'), false);

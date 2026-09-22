@@ -1,4 +1,5 @@
 import { getAppConfig } from '../types/config';
+import { isDemoMode } from '../types/demoMode';
 import {
   DiscoveredResource,
   DiscoveryResult,
@@ -6,17 +7,32 @@ import {
   ResourceOverridePayload,
 } from '../types/resource';
 import { ManagementOverview } from '../types/management';
-import { ManagementAuthFilesResponse, ManagementAuthFileMutationResponse, ManagementAuthFileModel } from '../types/managementAuthFile';
-import { DashboardResponse, DashboardTailResponse } from '../types/dashboard';
+import {
+  ManagementAuthFilesResponse,
+  ManagementAuthFileMutationResponse,
+  ManagementAuthFileModel,
+  ManagementAuthFileSafeFields,
+} from '../types/managementAuthFile';
+import {
+  ManagementOAuthModelAlias,
+  ManagementOAuthModelAliasesResponse,
+  ManagementOAuthModelAliasMutationResponse,
+} from '../types/managementOAuthModelAlias';
+import { DashboardResponse, DashboardTailResponse, DashboardWindow } from '../types/dashboard';
 import { DashboardTokenHeatmap } from '../types/tokenHeatmap';
 import { DashboardModelsResponse } from '../types/dashboardModels';
 import { ErrorLogFile } from '../types/logs';
 import { CapabilityProbeReport } from '../types/capability';
 import { ConfigScalarsResponse, ConfigSourceResponse } from '../types/configManagement';
 import { ClientAPIKeyItem, ClientKeyUsageItem, ProviderItem, SaveProviderPayload } from '../types/providers';
-import { OAuthProviderItem, StartOAuthResponse, OAuthStatusResponse, OAuthCallbackResponse } from '../types/oauth';
+import { OAuthProviderItem, StartOAuthResponse, OAuthStatusResponse, OAuthCallbackResponse, OAuthCancelResponse } from '../types/oauth';
 import { QuotaOverviewResponse, CredentialQuotaDetailResponse, QuotaItem } from '../types/quota';
-import { SystemInfoResponse } from '../types/system';
+import {
+  SystemInfoResponse,
+  SystemReleasesResponse,
+  SystemProductVersion,
+  SystemMaintenanceResponse,
+} from '../types/system';
 import { PluginsResponse, PluginStoreResponse } from '../types/plugin';
 import { PricingResponse, PricingSyncState, PricingUpdatePayload } from '../types/pricing';
 
@@ -41,12 +57,20 @@ import { UsageEventPage, UsageEventDetail, UsageFacetsResponse, parseUsageIngest
 export class ApiError extends Error {
   status: number;
   data: unknown;
+  /**
+   * True when the server refused the call because the deployment is the public
+   * demonstration. A caller distinguishes it from a permission error or from a
+   * failure, because the honest answer to the operator is "the demo does not do
+   * this" rather than "your request was denied".
+   */
+  demoBlocked: boolean;
 
-  constructor(message: string, status: number, data?: unknown) {
+  constructor(message: string, status: number, data?: unknown, demoBlocked = false) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.data = data;
+    this.demoBlocked = demoBlocked;
   }
 }
 
@@ -55,6 +79,23 @@ let unauthorizedHandler: UnauthorizedHandler | undefined;
 
 export function setUnauthorizedHandler(handler: UnauthorizedHandler | undefined): void {
   unauthorizedHandler = handler;
+}
+
+/**
+ * A successful write on a demo deployment is kept in memory and lost when the
+ * instance is replaced, so the console has to say so. The handler is how the API
+ * layer reports it without knowing that a message API exists.
+ */
+type DemoEventHandler = () => void;
+let demoNoticeHandler: DemoEventHandler | undefined;
+let demoBlockedHandler: DemoEventHandler | undefined;
+
+export function setDemoNoticeHandler(handler: DemoEventHandler | undefined): void {
+  demoNoticeHandler = handler;
+}
+
+export function setDemoBlockedHandler(handler: DemoEventHandler | undefined): void {
+  demoBlockedHandler = handler;
 }
 
 function apiRoot(): string {
@@ -66,9 +107,21 @@ function authUrl(path: string): string {
   return `${apiRoot()}/api/auth${path}`;
 }
 
-async function readError(response: Response): Promise<{ data: unknown; message: string }> {
+/**
+ * The code the server puts on a refusal in demo mode. Declared here rather than read
+ * from a header so the two sides cannot drift: the header says the same thing for a
+ * caller that never parses a body.
+ */
+export const DEMO_REFUSED_CODE = 'demo_operation_refused';
+
+async function readError(response: Response): Promise<{ data: unknown; message: string; demoBlocked: boolean }> {
+  // Either signal is enough. The header survives a body that a proxy rewrote, and the
+  // code survives a proxy that drops headers - and the code is the one the rest of the
+  // facade already branches on, so a refusal is not a special case for a caller.
+  const headerBlocked = response.headers.get('X-OMCPA-Demo-Blocked') !== null;
   let errorData: unknown = null;
   let message = `Request failed [HTTP ${response.status}]`;
+  let codeBlocked = false;
   try {
     errorData = await response.json();
     if (typeof errorData === 'object' && errorData !== null) {
@@ -78,12 +131,13 @@ async function readError(response: Response): Promise<{ data: unknown; message: 
       } else if (typeof errorObj.error === 'string') {
         message = errorObj.error;
       }
+      codeBlocked = errorObj.code === DEMO_REFUSED_CODE;
     }
   } catch {
     const text = await response.text().catch(() => '');
     if (text) message += `: ${text.slice(0, 100)}`;
   }
-  return { data: errorData, message };
+  return { data: errorData, message, demoBlocked: headerBlocked || codeBlocked };
 }
 
 /**
@@ -159,7 +213,8 @@ async function downloadBlob(url: string): Promise<Blob> {
   if (!response.ok) {
     const error = await readError(response);
     if (response.status === 401) unauthorizedHandler?.();
-    throw new ApiError(error.message, response.status, error.data);
+    if (error.demoBlocked) demoBlockedHandler?.();
+    throw new ApiError(error.message, response.status, error.data, error.demoBlocked);
   }
   return response.blob();
 }
@@ -189,11 +244,18 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     const errorMsg = err instanceof Error ? err.message : String(err);
     throw new ApiError(`Network request failed (${errorMsg}); check that the backend is running`, 0);
   }
+  const method = (options.method ?? 'GET').toUpperCase();
   if (!response.ok) {
     const error = await readError(response);
     if (response.status === 401) unauthorizedHandler?.();
-    throw new ApiError(error.message, response.status, error.data);
+    if (error.demoBlocked) demoBlockedHandler?.();
+    throw new ApiError(error.message, response.status, error.data, error.demoBlocked);
   }
+  // A write that succeeded on a demo is not durable. Reporting it here rather than in
+  // each form means no write can be added later that forgets to - and the auth endpoints
+  // are excluded, because signing in is not a write: a notice beside "Signed in" would
+  // say the sign-in had not been kept, which is the opposite of what happened.
+  if (isDemoMode() && method !== 'GET' && method !== 'HEAD' && !url.startsWith(authBaseUrl)) demoNoticeHandler?.();
   if (response.status === 204) return {} as T;
   return response.json() as Promise<T>;
 }
@@ -281,6 +343,29 @@ export const api = {
   },
 
   /**
+   * getDashboardProviders reads per-provider request totals for the window selected by the
+   * dashboard range picker.
+   *
+   * A window total per provider, not a series: the provider list prints a count and a rate and
+   * draws the rate as one meter. A per-bucket grid used to travel here for a sparkline each row
+   * drew; that mark is gone, and with it the group-by the endpoint used to run for it.
+   */
+  async getDashboardProviders(query?: string): Promise<{
+    window: DashboardWindow;
+    providers: {
+      id: string;
+      total: number;
+      success: number;
+      failure: number;
+      success_rate: number | null;
+    }[];
+    partial_errors: string[];
+  }> {
+    const search = query ? (query.startsWith('?') ? query : `?${query}`) : '';
+    return request(`/management/dashboard/providers${search}`, { method: 'GET' });
+  },
+
+  /**
    * Stored console preferences, keyed by name. Server-side on purpose: a
    * reload, a service restart and a container rebuild all wipe browser state,
    * and the operator's working window should survive all three.
@@ -344,8 +429,20 @@ export const api = {
     });
   },
 
-  async getClientAPIKeys(): Promise<{ keys: ClientAPIKeyItem[]; total: number }> {
-    return request<{ keys: ClientAPIKeyItem[]; total: number }>('/management/api-keys', { method: 'GET' });
+  /**
+   * `includeKeys` asks the server for the caller keys themselves, which only the key
+   * page needs: it joins this list against the configuration document it edits, by the
+   * key text, because neither a mask (not unique) nor an index (moves when CPA's list
+   * changes) identifies a key. Every other reader renders the mask the server sends by
+   * default, so reading this list never has to put a credential in a response body.
+   * A caller that opts in gets it at its own cache entry - see the query keys on the
+   * key page and the dashboard - because one entry cannot answer both contracts.
+   */
+  async getClientAPIKeys(includeKeys = false): Promise<{ keys: ClientAPIKeyItem[]; total: number }> {
+    return request<{ keys: ClientAPIKeyItem[]; total: number }>(
+      `/management/api-keys${includeKeys ? '?include_keys=true' : ''}`,
+      { method: 'GET' },
+    );
   },
 
   async createClientAPIKey(key: string): Promise<{ status: string; index: number; key: string }> {
@@ -393,15 +490,19 @@ export const api = {
     );
   },
 
-  async createManagementProvider(payload: SaveProviderPayload): Promise<{ status: string }> {
-    return request<{ status: string }>('/management/providers', {
+  /**
+   * The create response names the row it added: positions are assigned
+   * server-side, so the console cannot key a per-row override without it.
+   */
+  async createManagementProvider(payload: SaveProviderPayload): Promise<{ status: string; family: string; id: string }> {
+    return request<{ status: string; family: string; id: string }>('/management/providers', {
       method: 'POST',
       body: JSON.stringify(payload),
     });
   },
 
-  async updateManagementProvider(id: string, payload: SaveProviderPayload): Promise<{ status: string }> {
-    return request<{ status: string }>(`/management/providers/${encodeURIComponent(id)}`, {
+  async updateManagementProvider(id: string, payload: SaveProviderPayload): Promise<{ status: string; id: string }> {
+    return request<{ status: string; id: string }>(`/management/providers/${encodeURIComponent(id)}`, {
       method: 'PUT',
       body: JSON.stringify(payload),
     });
@@ -524,11 +625,17 @@ export const api = {
     });
   },
 
-  async patchManagementAuthFileFields(name: string, fields: Record<string, unknown>): Promise<ManagementAuthFileMutationResponse> {
+  async patchManagementAuthFileFields(name: string, fields: Record<string, unknown>, authIndex?: string): Promise<ManagementAuthFileMutationResponse> {
     return request<ManagementAuthFileMutationResponse>('/management/auth-files/fields', {
       method: 'PATCH',
-      body: JSON.stringify({ name, ...fields }),
+      body: JSON.stringify({ name, ...(authIndex ? { auth_index: authIndex } : {}), ...fields }),
     });
+  },
+
+  async getManagementAuthFileSafeFields(name: string, authIndex?: string): Promise<ManagementAuthFileSafeFields> {
+    const search = new URLSearchParams({ name });
+    if (authIndex) search.set('auth_index', authIndex);
+    return request<ManagementAuthFileSafeFields>(`/management/auth-files/safe-fields?${search.toString()}`, { method: 'GET' });
   },
 
   async deleteManagementAuthFiles(names: string[]): Promise<ManagementAuthFileMutationResponse> {
@@ -554,6 +661,20 @@ export const api = {
 
   async getManagementAuthFileModels(name: string): Promise<{ models: ManagementAuthFileModel[] }> {
     return request<{ models: ManagementAuthFileModel[] }>(`/management/auth-files/models?name=${encodeURIComponent(name)}`, { method: 'GET' });
+  },
+
+  async getManagementOAuthModelAliases(): Promise<ManagementOAuthModelAliasesResponse> {
+    return request<ManagementOAuthModelAliasesResponse>('/management/auth-files/model-aliases', { method: 'GET' });
+  },
+
+  async patchManagementOAuthModelAliases(
+    provider: string,
+    aliases: ManagementOAuthModelAlias[],
+  ): Promise<ManagementOAuthModelAliasMutationResponse> {
+    return request<ManagementOAuthModelAliasMutationResponse>('/management/auth-files/model-aliases', {
+      method: 'PATCH',
+      body: JSON.stringify({ provider, aliases }),
+    });
   },
 
   async getHealth(): Promise<HealthStatus> {
@@ -614,9 +735,9 @@ export const api = {
     });
   },
 
-  async cancelOAuthSession(sessionId?: string): Promise<{ status: string }> {
+  async cancelOAuthSession(sessionId?: string): Promise<OAuthCancelResponse> {
     const search = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
-    return request<{ status: string }>(`/management/oauth/session${search}`, { method: 'DELETE' });
+    return request<OAuthCancelResponse>(`/management/oauth/session${search}`, { method: 'DELETE' });
   },
 
   // Plugins
@@ -662,6 +783,35 @@ export const api = {
   async downloadSystemDiagnostics(): Promise<Blob> {
     const { apiBaseUrl } = getAppConfig();
     return downloadBlob(`${apiBaseUrl}/management/system/diagnostics`);
+  },
+
+  async getSystemReleases(product: 'omc' | 'cpa'): Promise<SystemReleasesResponse> {
+    return request<SystemReleasesResponse>(`/management/system/releases?product=${encodeURIComponent(product)}`, {
+      method: 'GET',
+    });
+  },
+
+  async checkUpdates(): Promise<{
+    omc_version: SystemProductVersion;
+    cpa_version: SystemProductVersion;
+    /** True when the floor answered from the stored index instead of reading the feed. */
+    served_from_cache: boolean;
+  }> {
+    return request<{
+      omc_version: SystemProductVersion;
+      cpa_version: SystemProductVersion;
+      served_from_cache: boolean;
+    }>('/management/system/check-updates', { method: 'POST' });
+  },
+
+  async getSystemMaintenance(): Promise<SystemMaintenanceResponse> {
+    return request<SystemMaintenanceResponse>('/management/system/maintenance', { method: 'GET' });
+  },
+
+  async runSystemMaintenance(action: 'checkpoint' | 'vacuum'): Promise<SystemMaintenanceResponse> {
+    return request<SystemMaintenanceResponse>(`/management/system/maintenance/${encodeURIComponent(action)}`, {
+      method: 'POST',
+    });
   },
 
   // Quota
@@ -746,4 +896,3 @@ export const api = {
     });
   },
 };
-

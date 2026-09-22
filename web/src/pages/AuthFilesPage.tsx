@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   Alert,
   App as AntdApp,
@@ -15,6 +16,7 @@ import {
 import {
   AppstoreOutlined,
   BarsOutlined,
+  BranchesOutlined,
   ReloadOutlined,
   SearchOutlined,
   UploadOutlined,
@@ -40,10 +42,12 @@ import { AuthFileCard } from '../components/authFiles/AuthFileCard';
 import { AuthFileDetailDrawer } from '../components/authFiles/AuthFileDetailDrawer';
 import { BatchActionBar } from '../components/authFiles/BatchActionBar';
 import { ModelsModal } from '../components/authFiles/ModelsModal';
+import { OAuthModelAliasDrawer } from '../components/authFiles/OAuthModelAliasDrawer';
 import { ProviderFilterTabs } from '../components/common/ProviderFilterTabs';
+import { providerFilterTabs } from '../types/credentialProviders';
+import { usePluginOAuthLogos } from '../hooks/usePluginOAuthLogos';
+import { pluginOAuthLogoFor } from '../types/pluginOAuthProviders';
 import styles from './authFiles/AuthFilesPage.module.css';
-
-const KNOWN_PROVIDERS = ['claude', 'antigravity', 'codex', 'xai', 'kimi'];
 
 function safeError(error: unknown, t: TFunc): string {
   if (error instanceof ApiError && error.status === 501) return t('af.unsupported');
@@ -65,8 +69,21 @@ export const AuthFilesPage: React.FC = () => {
   const queryClient = useQueryClient();
 
   // Filters, sorting, view modes
-  const [query, setQuery] = useState('');
-  const [provider, setProvider] = useState('all');
+  const [searchParams] = useSearchParams();
+  const targetProvider = searchParams.get('provider');
+  const targetQuery = searchParams.get('q');
+
+  const [query, setQuery] = useState(targetQuery ?? '');
+  const [provider, setProvider] = useState(targetProvider?.trim() ? targetProvider.trim().toLowerCase() : 'all');
+
+  // A plugin-registered OAuth provider publishes its own logo, which wins over the
+  // console's catalog mark for that provider key.
+  const pluginLogos = usePluginOAuthLogos();
+
+  useEffect(() => {
+    setProvider(targetProvider?.trim() ? targetProvider.trim().toLowerCase() : 'all');
+    setQuery(targetQuery ?? '');
+  }, [targetProvider, targetQuery]);
   const [statusFilter, setStatusFilter] = useState<AuthFileStatusFilter>('all');
   const [sortMode, setSortMode] = useState<AuthFileSortKey>('name-asc');
   const [compactMode, setCompactMode] = useState(false);
@@ -77,6 +94,7 @@ export const AuthFilesPage: React.FC = () => {
   const [selected, setSelected] = useState<string[]>([]);
   const [selectedFile, setSelectedFile] = useState<ManagementAuthFile | null>(null);
   const [modelsFile, setModelsFile] = useState<ManagementAuthFile | null>(null);
+  const [isAliasDrawerOpen, setIsAliasDrawerOpen] = useState(false);
   const [busyFiles, setBusyFiles] = useState<Record<string, boolean>>({});
   const [isOperating, setIsOperating] = useState(false);
 
@@ -134,19 +152,12 @@ export const AuthFilesPage: React.FC = () => {
   const disabledCount = useMemo(() => files.filter(isAuthFileDisabled).length, [files]);
   const problemCount = useMemo(() => files.filter(isAuthFileProblem).length, [files]);
 
-  // Provider tabs calculation: known providers first, then any extra providers observed (including unknown)
-  const tabProviders = useMemo(() => {
-    const extras = files
-      .map(providerOf)
-      .filter((p) => p && !KNOWN_PROVIDERS.includes(p));
-    return ['all', ...KNOWN_PROVIDERS, ...Array.from(new Set(extras)).sort()];
-  }, [files]);
+  // Provider tabs: the pinned providers first, then anything else the credential
+  // list contains.
+  const tabProviders = useMemo(() => providerFilterTabs(files.map(providerOf)), [files]);
 
   const tabCounts = useMemo(() => {
     const counts: Record<string, number> = { all: files.length };
-    for (const p of KNOWN_PROVIDERS) {
-      counts[p] = 0;
-    }
     for (const f of files) {
       const p = providerOf(f);
       counts[p] = (counts[p] ?? 0) + 1;
@@ -485,6 +496,14 @@ export const AuthFilesPage: React.FC = () => {
             {t('af.upload')}
           </Button>
           <Button
+            data-testid="auth-files-model-alias-open"
+            icon={<BranchesOutlined />}
+            onClick={() => setIsAliasDrawerOpen(true)}
+            disabled={isOperating}
+          >
+            {t('af.alias_open')}
+          </Button>
+          <Button
             type="text"
             icon={<ReloadOutlined />}
             onClick={() => filesQuery.refetch()}
@@ -502,6 +521,7 @@ export const AuthFilesPage: React.FC = () => {
         counts={tabCounts}
         active={provider}
         onChange={setProvider}
+        pluginLogos={pluginLogos}
       />
 
       {/* Floating Batch Action Bar */}
@@ -609,6 +629,7 @@ export const AuthFilesPage: React.FC = () => {
                 <AuthFileCard
                   key={`${file.name}:${file.auth_index ?? ''}`}
                   file={file}
+                  pluginLogo={pluginOAuthLogoFor(pluginLogos, providerOf(file))}
                   compact={compactMode}
                   selected={selected.includes(file.name)}
                   busy={fileBusy}
@@ -663,6 +684,15 @@ export const AuthFilesPage: React.FC = () => {
         file={modelsFile}
         open={Boolean(modelsFile)}
         onClose={() => setModelsFile(null)}
+      />
+
+      <OAuthModelAliasDrawer
+        open={isAliasDrawerOpen}
+        onClose={() => setIsAliasDrawerOpen(false)}
+        onSaved={() => {
+          void queryClient.invalidateQueries({ queryKey: ['management-overview'] });
+        }}
+        providerOptions={tabProviders.filter((value) => value !== 'all')}
       />
     </div>
   );

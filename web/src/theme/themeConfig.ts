@@ -1,6 +1,15 @@
 import { theme, type ThemeConfig } from 'antd';
 
-export type ThemeMode = 'dark' | 'light';
+import type { ResolvedPalette, ThemePalette } from './palette';
+
+/**
+ * The palette projected onto Ant Design, and onto the stylesheet's custom properties.
+ *
+ * This module computes nothing about colour. A palette is resolved once in `palette.ts`, and this
+ * is one of the surfaces that reads it - the same way the chart runtime, the Monaco editor and the
+ * brand artwork do. That separation is why a custom palette reaches every one of those surfaces
+ * without any of them knowing custom palettes exist.
+ */
 
 const monoFont = [
   '"Sarasa Mono SC"',
@@ -29,75 +38,37 @@ const monoFont = [
 export const MONO_FONT_STACK = monoFont;
 
 /**
- * Design tokens for both mode palettes. `docs/design.md` is the source of
- * truth; this object and the `:root` variables in `web/src/index.css` are the
- * only two places that may name a colour, so the app never falls back to
- * antd's default blue.
+ * A named motion token, in the shape both consumers read it: WAAPI takes an `EffectTiming` (which is
+ * this with every field optional) and the chart library takes `duration?: number` with an easing
+ * string, so naming the two fields is what lets one token serve both without a cast.
  */
-export const palette = {
-  dark: {
-    bg: '#121214',
-    surface: '#1c1c1f',
-    fg: '#f4f4f6',
-    fg2: '#a1a1aa',
-    muted: '#71717a',
-    meta: '#52525b',
-    border: '#2c2c30',
-    borderSoft: '#222226',
-    /* Accent ladder, hue 201. The link step is the bright one because it sits on the dark
-       background (6.12:1); the two deeper steps are what white label text can sit on (4.85:1 and
-       7.09:1). See docs/design.md §2 for the measured ratios. */
-    accent: '#00a2fb',
-    accentHover: '#0077b8',
-    accentActive: '#005d8f',
-    accentOn: '#ffffff',
-    success: '#10b981',
-    warn: '#f59e0b',
-    danger: '#ef4444',
-    /* Cache-rate scale (design.md §2): yellow → green, no red. */
-    cacheRateYellow: '#f59e0b',
-    cacheRateGreen: '#10b981',
-    /* Categorical series palette (design.md §2, ADR 0006): ZCode & CodeX inspired developer
-       console palette matching AntV and Tremor. Alternates vibrant primary hues
-       (Blue -> Emerald -> Purple -> Coral -> Amber -> Cyan) ensuring immediate visual hierarchy,
-       warm-cool harmony, and rich, lively telemetry. */
-    series: ['#3b82f6', '#10b981', '#8b5cf6', '#f43f5e', '#f59e0b', '#06b6d4'],
-    /* The trend's plot floor and the ring's unfilled track. */
-    seriesTrack: '#2a2a30',
-  },
-  light: {
-    bg: '#ffffff',
-    surface: '#f6f6f8',
-    fg: '#1c1c1e',
-    fg2: '#505055',
-    muted: '#787880',
-    meta: '#98989f',
-    border: '#e5e5ea',
-    borderSoft: '#ededf2',
-    /* The same hue one step darker, because the bright accent cannot be legible on a light page:
-       #00a2fb reads 2.71:1 there, while this reads 6.57:1 as a link and 7.09:1 under white text.
-       The dark theme's link step is therefore the light theme's filled-control step. */
-    accent: '#005d8f',
-    accentHover: '#004770',
-    accentActive: '#00344f',
-    accentOn: '#ffffff',
-    success: '#059669',
-    warn: '#b45309',
-    danger: '#dc2626',
-    /* Darker steps of the same two hues so badge text stays legible on a light
-       page; the low end is ochre because yellow cannot be both saturated and
-       4.5:1 there. */
-    cacheRateYellow: '#b45309',
-    cacheRateGreen: '#047857',
-    /* Deep saturated counterparts for light card surfaces clearing >= 3.0 graphical contrast. */
-    series: ['#2563eb', '#059669', '#7c3aed', '#e11d48', '#b45309', '#0891b2'],
-    seriesTrack: '#e5e5ea',
-  },
-} as const;
+export interface MotionToken {
+  readonly duration: number;
+  readonly easing: string;
+}
 
-export function createThemeConfig(mode: ThemeMode = 'dark'): ThemeConfig {
-  const dark = mode === 'dark';
-  const t = dark ? palette.dark : palette.light;
+/**
+ * docs/design.md §7's `roll` token: the dashboard's KPI readouts sweeping to a new value, and the
+ * AntV marks behind them morphing between two revisions.
+ *
+ * The only motion in the console longer than `base`, and the only one allowed to run on a poll the
+ * reader did not ask for - §7 rules 8 and 5 scope it, and ADR 0007 / ADR 0008 record the trade-off.
+ * It lives here rather than in the components that consume it because it is a design token: a digit
+ * move at `base` is indistinguishable from a redraw, which is the state 240ms exists to leave.
+ */
+export const MOTION_ROLL: MotionToken = { duration: 240, easing: 'cubic-bezier(0.2, 0, 0, 1)' };
+
+/**
+ * Glyph presence within a readout - a digit entering or leaving the number - on the `base` token.
+ *
+ * A presence fade is not the readout's motion but the acknowledgement that its digit count changed,
+ * and holding it to `base` is what stops an arriving `,000` from trailing the sweep over `roll`.
+ */
+export const MOTION_ROLL_PRESENCE: MotionToken = { duration: 100, easing: 'cubic-bezier(0.2, 0, 0, 1)' };
+
+export function createThemeConfig(resolved: Pick<ResolvedPalette, 'mode' | 'palette'>): ThemeConfig {
+  const dark = resolved.mode === 'dark';
+  const t = resolved.palette;
 
   const noShadow = {
     boxShadow: 'none',
@@ -122,11 +93,8 @@ export function createThemeConfig(mode: ThemeMode = 'dark'): ThemeConfig {
       fontSizeHeading2: 20,
       fontSizeHeading3: 16,
       fontSizeHeading4: 14,
-      // Terminal-flat elevation: borders + background shifts, zero shadows.
       ...noShadow,
 
-      // Brand accent — filled controls use the deeper accent-hover step; the
-      // bright accent is reserved for links and info (docs/design.md §6).
       colorPrimary: t.accentHover,
       colorPrimaryHover: t.accentActive,
       colorPrimaryActive: t.accentActive,
@@ -137,7 +105,6 @@ export function createThemeConfig(mode: ThemeMode = 'dark'): ThemeConfig {
       colorWarning: t.warn,
       colorError: t.danger,
 
-      // Text and background mapping from the palette above.
       colorTextBase: t.fg,
       colorBgBase: t.bg,
       colorText: t.fg,
@@ -148,26 +115,18 @@ export function createThemeConfig(mode: ThemeMode = 'dark'): ThemeConfig {
       colorBorderSecondary: t.borderSoft,
       colorSplit: t.borderSoft,
       colorBgContainer: t.bg,
-      colorBgElevated: dark ? '#222226' : '#ffffff',
+      colorBgElevated: t.elevated,
       colorBgLayout: t.bg,
-      colorFillTertiary: dark ? t.surface : '#ffffff',
-      colorFillQuaternary: dark ? t.surface : '#ffffff',
-      // antd paints a popup's text as `colorTextLightSolid` - white - so the spotlight stays dark
-      // in both themes. It is deliberately NOT `t.surface` in light: that is near-white, and white
-      // text on it measures 1.15:1. A panel whose own content sets its text colours overrides this
-      // for its own popper instead of moving the global token, which every other tooltip shares.
-      colorBgSpotlight: dark ? '#222226' : t.fg,
+      colorFillTertiary: t.surface,
+      colorFillQuaternary: t.surface,
+      colorBgSpotlight: t.tooltipBg,
 
       borderRadius: 4,
       borderRadiusLG: 6,
       borderRadiusSM: 4,
       wireframe: false,
-
       motionDurationFast: '0.05s',
       motionDurationMid: '0.1s',
-      // antd hangs the things that hurt off Slow: menu item hover, submenu
-      // expand, sider collapse. Its default is 0.3s, which is why a nav hover
-      // reads as drag. design.md §7 rule 6: feedback is immediate.
       motionDurationSlow: '0.1s',
     },
     components: {
@@ -178,21 +137,19 @@ export function createThemeConfig(mode: ThemeMode = 'dark'): ThemeConfig {
         headerPadding: '0 24px 0 16px',
         siderBg: t.bg,
       },
-      // OpenCode-inspired nav: active item is marked by the left inset rule and
-      // fg text rather than a filled block; hover uses surface.
       Menu: {
         itemBg: t.bg,
         darkItemBg: t.bg,
         subMenuItemBg: t.bg,
         darkSubMenuItemBg: t.bg,
-        popupBg: dark ? '#222226' : '#ffffff',
+        popupBg: t.elevated,
         itemHeight: 34,
         iconMarginInlineEnd: 10,
         itemBorderRadius: 4,
         itemColor: t.muted,
         darkItemColor: t.muted,
         itemHoverColor: t.fg,
-        darkItemHoverBg: '#242428',
+        darkItemHoverBg: t.hover,
         darkItemHoverColor: t.fg,
         itemSelectedBg: 'transparent',
         itemSelectedColor: t.fg,
@@ -209,7 +166,7 @@ export function createThemeConfig(mode: ThemeMode = 'dark'): ThemeConfig {
       Table: {
         headerBg: dark ? t.bg : t.surface,
         borderColor: t.borderSoft,
-        rowHoverBg: dark ? '#222226' : '#ececf0',
+        rowHoverBg: t.rowHover,
         headerColor: t.muted,
         cellPaddingBlockSM: 8,
         cellPaddingInlineSM: 12,
@@ -222,6 +179,11 @@ export function createThemeConfig(mode: ThemeMode = 'dark'): ThemeConfig {
         controlHeightSM: 28,
         fontSizeSM: 13,
         fontWeight: 500,
+        // The label of a filled primary control. Ant Design derives this token from
+        // `colorTextLightSolid`, which is white in every palette, so a palette whose accent fill is
+        // light would otherwise draw a white label on it. `accentOn` is solved by the derivation, so
+        // this is the same value on a built-in palette and on an operator's own.
+        primaryColor: t.accentOn,
         primaryShadow: 'none',
         defaultShadow: 'none',
         dangerShadow: 'none',
@@ -247,22 +209,8 @@ export function createThemeConfig(mode: ThemeMode = 'dark'): ThemeConfig {
         controlHeight: 32,
         controlHeightSM: 28,
         fontSizeSM: 13,
-        // The picker's two surfaces have to differ from each other *and* from the card it sits on,
-        // and each palette needs its own pairing to get that. antd's defaults are `colorBgElevated`
-        // on `colorBgLayout`, which this palette maps to the same white in light - so the control
-        // drew its selection as nothing there, while the dark theme got away with it only because
-        // its track happened to be darker than its thumb.
-        //
-        // The pairing follows the heatmap ramp's ordered-against-the-card rule (docs/design.md
-        // "Token activity heatmap"): the track recedes below the card's surface and the thumb is
-        // raised above it. So the track is the
-        // deepest neutral each palette has (the page background on dark, the border step on light,
-        // where the page background is white and would vanish into the thumb) and the thumb is a step
-        // above the card. Naming them per theme rather than reusing `bg`/`surface` is what makes the
-        // selected option legible in both: on light, `surface` *is* the card's colour, so a thumb
-        // painted with it disappeared into the card while the track stood out in its place.
         trackBg: dark ? t.bg : t.border,
-        itemSelectedBg: dark ? t.border : '#ffffff',
+        itemSelectedBg: dark ? t.border : t.elevated,
         itemColor: t.fg2,
         itemSelectedColor: t.fg,
         itemHoverBg: 'transparent',
@@ -277,15 +225,10 @@ export function createThemeConfig(mode: ThemeMode = 'dark'): ThemeConfig {
       },
       Drawer: { ...noShadow },
       Modal: { ...noShadow },
-      // Floating menus get the surface step in both modes. In light mode the
-      // default elevated colour is `bg`, which is the page colour itself: a
-      // menu opened over the page had no fill difference at all, only the
-      // border. Dark already uses surface, so this is a no-op there.
-      Popover: { ...noShadow, colorBgElevated: dark ? '#222226' : '#ffffff' },
-      Dropdown: { ...noShadow, colorBgElevated: dark ? '#222226' : '#ffffff' },
-      Select: { optionSelectedBg: dark ? '#242428' : '#ececf0', optionSelectedColor: t.fg, colorBgElevated: dark ? '#222226' : '#ffffff' },
-      // Matches the global spotlight token above.
-      Tooltip: { colorBgSpotlight: dark ? t.surface : t.fg },
+      Popover: { ...noShadow, colorBgElevated: t.elevated },
+      Dropdown: { ...noShadow, colorBgElevated: t.elevated },
+      Select: { optionSelectedBg: t.selected, optionSelectedColor: t.fg, colorBgElevated: t.elevated },
+      Tooltip: { colorBgSpotlight: t.tooltipBg },
       Switch: { colorPrimary: t.success, colorPrimaryHover: t.success },
       Tag: { borderRadiusSM: 4, defaultBg: t.bg },
       Progress: { remainingColor: t.border },
@@ -298,4 +241,38 @@ export function createThemeConfig(mode: ThemeMode = 'dark'): ThemeConfig {
   };
 }
 
-export const themeConfig = createThemeConfig('dark');
+export function themePaletteCssVariables(palette: ThemePalette): Record<string, string> {
+  const variables: Record<string, string> = {
+    '--bg': palette.bg,
+    '--surface': palette.surface,
+    '--bg-surface': palette.surface,
+    '--elevated': palette.elevated,
+    '--fg': palette.fg,
+    '--fg-2': palette.fg2,
+    '--muted': palette.muted,
+    '--meta': palette.meta,
+    '--border': palette.border,
+    '--border-soft': palette.borderSoft,
+    '--hover-inset': palette.hoverInset,
+    '--selected-inset': palette.selected,
+    '--accent': palette.accent,
+    '--accent-hover': palette.accentHover,
+    '--accent-active': palette.accentActive,
+    '--accent-on': palette.accentOn,
+    '--success': palette.success,
+    '--warn': palette.warn,
+    '--danger': palette.danger,
+    '--cache-rate-yellow': palette.cacheRateYellow,
+    '--cache-rate-green': palette.cacheRateGreen,
+    '--heatmap-quiet': palette.heatmapQuiet,
+    '--heatmap-busy': palette.heatmapBusy,
+    '--heatmap-zero-unrecorded': palette.heatmapZeroUnrecorded,
+    '--heatmap-zero-recorded': palette.heatmapZeroRecorded,
+    '--heatmap-tip-link': palette.heatmapTipLink,
+    '--series-track': palette.seriesTrack,
+  };
+  palette.series.forEach((color, index) => {
+    variables[`--series-${index + 1}`] = color;
+  });
+  return variables;
+}

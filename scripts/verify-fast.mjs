@@ -48,6 +48,7 @@ const COMMANDS = {
   i18n: { label: 'frontend translation keys', command: 'pnpm', args: ['check-i18n'] },
   'antd-lint': { label: 'Ant Design lint', command: 'pnpm', args: ['lint:antd'] },
   'css-modules': { label: 'CSS module references', command: 'pnpm', args: ['check-css-modules'] },
+  motion: { label: 'motion budget', command: 'pnpm', args: ['check:motion'] },
   go: { label: 'Go tests', command: 'go', args: ['test', './...'] },
   docs: { label: 'documentation references', command: 'pnpm', args: ['check-docs'] },
   workflow: { label: 'GitHub workflow syntax', command: 'pnpm', args: ['verify:workflow'] },
@@ -62,6 +63,11 @@ if (files.length === 0) {
 }
 
 const selected = planChecks(files);
+if (selected.length === 0) {
+  console.error('[fast] no checks selected for changed files:');
+  for (const file of files) console.error(`  ${file}`);
+  process.exit(1);
+}
 
 // Concurrent, because the checks are independent processes and the budget is what
 // decides whether a development loop can afford to run this at all. Quiet, because

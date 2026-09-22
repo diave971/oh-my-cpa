@@ -57,18 +57,18 @@ To keep feedback fast and reliable, verification in Oh My CPA is structured into
 
 Additional targeted checks:
 - `pnpm check-docs`: Validates that all backticked repository paths in documentation resolve and no retired references exist.
-- `pnpm check-i18n`: Identifies missing translation keys across English and Chinese.
+- `pnpm check-i18n`: Identifies missing source keys and incomplete or stale locale catalogs.
 - `pnpm check-css-modules`: Ensures CSS module class references match their definition files.
 
 ---
 
 ## Development Guidelines
 
-### 1. Bilingual Localization
-User-facing strings must never be hardcoded in backend responses or React components. Add all new strings as `[zh, en]` pairs to `web/src/i18n/index.tsx` and verify with `pnpm check-i18n`.
+### 1. Localization
+User-facing strings must never be hardcoded in backend responses or React components. Add all new strings as `[zh, en]` pairs to `web/src/i18n/index.tsx`, add the corresponding entries to `web/src/i18n/locales/zh-Hant.ts` and `web/src/i18n/locales/ms.ts`, and verify with `pnpm check-i18n`.
 
 ### 2. Styling & Theme Tokens
-- Never hardcode color hex values in components. Import from `palette` in `web/src/theme/themeConfig.ts` or use CSS variables from `docs/design.md`.
+- Never hardcode color hex values in components. Read the resolved palette from `web/src/theme/palette.ts` or use the CSS variables from `docs/design.md`; the seventeen derived tokens are computed, so reach for the relationship rather than re-deriving one.
 - Oh My CPA uses a **terminal-flat** design language: zero box shadows (`box-shadow: none`), 4px border radii, and 1px hairline borders. Status colors (green, amber, red) are reserved strictly for semantic system health.
 
 ### 3. API & DTO Allowlisting

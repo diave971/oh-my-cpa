@@ -4,7 +4,9 @@ import { CopyOutlined, SearchOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import { api, ApiError } from '../../api/client';
 import { useT } from '../../i18n';
+import { copyText } from '../../utils/clipboard';
 import type { ManagementAuthFile, ManagementAuthFileModel } from '../../types/managementAuthFile';
+import { useOverlayHistory } from '../../hooks/useOverlayHistory';
 
 const { Text } = Typography;
 
@@ -16,6 +18,7 @@ interface ModelsModalProps {
 
 export const ModelsModal: React.FC<ModelsModalProps> = ({ file, open, onClose }) => {
   const t = useT();
+  useOverlayHistory({ isOpen: open, onClose });
   const { message } = AntdApp.useApp();
   const [filter, setFilter] = useState('');
 
@@ -47,15 +50,12 @@ export const ModelsModal: React.FC<ModelsModalProps> = ({ file, open, onClose })
     );
   });
 
-  const handleCopy = (text: string) => {
-    if (!navigator.clipboard?.writeText) {
-      message.info(text);
+  const handleCopy = async (text: string) => {
+    if (await copyText(text)) {
+      message.success(t('common.copied'));
       return;
     }
-    navigator.clipboard.writeText(text).then(
-      () => message.success(t('common.copied')),
-      () => message.error(t('af.clipboard_error'))
-    );
+    message.error(t('af.clipboard_error'));
   };
 
   const renderContent = () => {
@@ -126,7 +126,7 @@ export const ModelsModal: React.FC<ModelsModalProps> = ({ file, open, onClose })
                     type="text"
                     size="small"
                     icon={<CopyOutlined />}
-                    onClick={() => handleCopy(record.id)}
+                    onClick={() => void handleCopy(record.id)}
                     aria-label={t('common.copy')}
                   />
                 ),

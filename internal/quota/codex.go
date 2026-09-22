@@ -13,6 +13,11 @@ const (
 	FiveHourSeconds = 18000
 	WeeklySeconds   = 604800
 	MonthlySeconds  = 2592000
+
+	// maxInt64Exclusive is 2^63, the first value an int64 cannot represent. It is
+	// written out because float64(math.MaxInt64) rounds up to it, so a comparison
+	// against math.MaxInt64 would let exactly 2^63 through the float64 guard.
+	maxInt64Exclusive = 9223372036854775808.0
 )
 
 // RawCodexWindow handles both snake_case and camelCase serialization.
@@ -99,6 +104,9 @@ func toFloat(value any) (float64, bool) {
 	case string:
 		v = strings.TrimSpace(v)
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			if math.IsNaN(f) || math.IsInf(f, 0) {
+				return 0, false
+			}
 			return f, true
 		}
 	}
@@ -115,6 +123,12 @@ func toInt64(value any) (int64, bool) {
 	case int:
 		return int64(v), true
 	case float64:
+		// float64(math.MaxInt64) rounds up to 2^63, so the upper bound must be
+		// inclusive: a value of exactly 2^63 would otherwise pass the guard and
+		// convert to a negative int64.
+		if math.IsNaN(v) || math.IsInf(v, 0) || v < math.MinInt64 || v >= maxInt64Exclusive {
+			return 0, false
+		}
 		return int64(v), true
 	case json.Number:
 		if i, err := v.Int64(); err == nil {
@@ -136,6 +150,9 @@ func toInt64(value any) (int64, bool) {
 }
 
 func clamp(value, min, max float64) float64 {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return min
+	}
 	if value < min {
 		return min
 	}
@@ -192,6 +209,33 @@ func formatResetInstant(resetAtMS int64, nowMS int64) string {
 	return fmt.Sprintf("%s (%s后恢复)", resetTime.Format("01-02 15:04"), rel)
 }
 
+// RawCodexSubscriptionPayload is the response of the subscription endpoint
+// (GET https://chatgpt.com/backend-api/subscriptions?account_id=...), which
+// reports the current billing window rather than the window frozen into the
+// credential's id_token.
+type RawCodexSubscriptionPayload struct {
+	PlanType    string `json:"plan_type"`
+	ActiveStart string `json:"active_start"`
+	ActiveUntil string `json:"active_until"`
+	ShouldRenew *bool  `json:"will_renew"`
+}
+
+// ParseCodexSubscription reads the authoritative subscription window. Only
+// active_until is consumed: upstream's separate entitlement payload also carries
+// an expires_at that trails the renewal instant, and conflating the two would
+// report a different date than the plan's own renewal.
+func ParseCodexSubscription(raw []byte) (untilMS int64, shouldRenew *bool, ok bool) {
+	var payload RawCodexSubscriptionPayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return 0, nil, false
+	}
+	until, parsed := parseCreditInstantToMS(payload.ActiveUntil)
+	if !parsed || until <= 0 {
+		return 0, nil, false
+	}
+	return until, payload.ShouldRenew, true
+}
+
 func resolveCodexPlanTier(planType string) (tier string, label string) {
 	norm := strings.ToLower(strings.TrimSpace(planType))
 	switch norm {
@@ -239,6 +283,9 @@ func ParseCodexUsage(raw []byte, nowMS int64) (*QuotaPlan, []QuotaWindow, *Codex
 			exp = exp * 1000
 		}
 		expiresAtMS = &exp
+		// No provenance is recorded here. Only the subscription endpoint may claim a
+		// live read, and the service always probes it, so labeling this value would
+		// either duplicate that claim or overstate semantics this parser cannot verify.
 		diff := time.Duration(exp-nowMS) * time.Millisecond
 		if diff > 0 {
 			expiresLabel = formatDurationShort(diff) + "后到期"
@@ -262,7 +309,18 @@ func ParseCodexUsage(raw []byte, nowMS int64) (*QuotaPlan, []QuotaWindow, *Codex
 
 	windows := make([]QuotaWindow, 0)
 
-	addWindow := func(w *RawCodexWindow, id, defaultLabel, scope, model string) {
+	limitReached := func(rateLimit *RawCodexRateLimit) bool {
+		if rateLimit == nil {
+			return false
+		}
+		if rateLimit.Allowed != nil && !*rateLimit.Allowed {
+			return true
+		}
+		return (rateLimit.LimitReached != nil && *rateLimit.LimitReached) ||
+			(rateLimit.LimitReachedAlt != nil && *rateLimit.LimitReachedAlt)
+	}
+
+	addWindow := func(w *RawCodexWindow, id, defaultLabel, scope, model string, limitReached bool) {
 		if w == nil {
 			return
 		}
@@ -271,6 +329,10 @@ func ParseCodexUsage(raw []byte, nowMS int64) (*QuotaPlan, []QuotaWindow, *Codex
 			rawUsed = w.UsedPercentAlt
 		}
 		usedVal, hasUsed := toFloat(rawUsed)
+		if limitReached {
+			usedVal = 100
+			hasUsed = true
+		}
 
 		rawWinSec := w.LimitWindowSeconds
 		if rawWinSec == nil {
@@ -365,8 +427,8 @@ func ParseCodexUsage(raw []byte, nowMS int64) (*QuotaPlan, []QuotaWindow, *Codex
 			secondary = rateLimit.SecondaryWinAlt
 		}
 
-		addWindow(primary, "five_hour", "5小时用量上限 (5-Hour)", "standard", "")
-		addWindow(secondary, "weekly", "每周用量上限 (Weekly)", "standard", "")
+		addWindow(primary, "five_hour", "5小时用量上限 (5-Hour)", "standard", "", limitReached(rateLimit))
+		addWindow(secondary, "weekly", "每周用量上限 (Weekly)", "standard", "", limitReached(rateLimit))
 	}
 
 	codeReview := payload.CodeReviewRateLimit
@@ -382,8 +444,8 @@ func ParseCodexUsage(raw []byte, nowMS int64) (*QuotaPlan, []QuotaWindow, *Codex
 		if crSecondary == nil {
 			crSecondary = codeReview.SecondaryWinAlt
 		}
-		addWindow(crPrimary, "code_review_5h", "代码审查 5小时配额", "standard", "")
-		addWindow(crSecondary, "code_review_weekly", "代码审查 每周配额", "standard", "")
+		addWindow(crPrimary, "code_review_5h", "代码审查 5小时配额", "code_review", "", limitReached(codeReview))
+		addWindow(crSecondary, "code_review_weekly", "代码审查 每周配额", "code_review", "", limitReached(codeReview))
 	}
 
 	// Additional rate limits (e.g. GPT-5.3-Codex-Spark, o1, etc.)
@@ -416,8 +478,8 @@ func ParseCodexUsage(raw []byte, nowMS int64) (*QuotaPlan, []QuotaWindow, *Codex
 			if s == nil {
 				s = lim.SecondaryWinAlt
 			}
-			addWindow(p, fmt.Sprintf("addl_%d_p", i), fmt.Sprintf("%s 5小时配额", name), "model", name)
-			addWindow(s, fmt.Sprintf("addl_%d_s", i), fmt.Sprintf("%s 每周配额", name), "model", name)
+			addWindow(p, fmt.Sprintf("addl_%d_p", i), fmt.Sprintf("%s 5小时配额", name), "model", name, limitReached(lim))
+			addWindow(s, fmt.Sprintf("addl_%d_s", i), fmt.Sprintf("%s 每周配额", name), "model", name, limitReached(lim))
 		}
 	}
 

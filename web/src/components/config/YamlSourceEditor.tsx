@@ -1,4 +1,5 @@
 import React, { useEffect, useRef } from 'react';
+import { useIsPhoneViewport } from '../../hooks/useIsPhoneViewport';
 import Editor, { loader, type OnMount } from '@monaco-editor/react';
 import * as monaco from 'monaco-editor';
 import 'monaco-editor/esm/vs/features/find/register.js';
@@ -11,7 +12,8 @@ import 'monaco-editor/esm/vs/editor/contrib/suggest/browser/suggestInlineComplet
 import { conf as yamlConf, language as yamlLanguage } from 'monaco-editor/esm/vs/languages/definitions/yaml/yaml.js';
 import { configureMonacoYaml, type MonacoYaml } from 'monaco-yaml';
 import { parseDocument } from 'yaml';
-import { palette } from '../../theme/themeConfig';
+import type { ResolvedPalette, ThemeMode, ThemePalette } from '../../theme/palette';
+import { contrastRatio, oklchLightness, relativeLuminance, withLightness } from '../../theme/colorMath';
 
 // ── Configure Local Monaco Environment (Strict Offline / Zero CDN) ───────────
 if (typeof window !== 'undefined') {
@@ -61,109 +63,177 @@ function ensureMonacoConfigured() {
       yamlVersion: '1.2',
     });
   }
+}
 
-  // Register OMC Themes with semantic non-status syntax palette
-  monaco.editor.defineTheme('omc-dark', {
-    base: 'vs-dark',
-    inherit: true,
-    rules: [
-      { token: 'comment', foreground: '7F858A', fontStyle: 'italic' },
-      { token: 'comment.yaml', foreground: '7F858A', fontStyle: 'italic' },
-      { token: 'type', foreground: '79A8D8' }, // YAML Keys (host:, port:, etc.)
-      { token: 'type.yaml', foreground: '79A8D8' },
-      { token: 'string', foreground: 'B7A7D8' }, // Strings (soft lavender)
-      { token: 'string.yaml', foreground: 'B7A7D8' },
-      { token: 'number', foreground: '72A7A0' }, // Numbers (soft sage/teal)
-      { token: 'number.yaml', foreground: '72A7A0' },
-      { token: 'keyword', foreground: 'C58FB0' }, // true, false, null (soft dusky rose)
-      { token: 'keyword.yaml', foreground: 'C58FB0' },
-      { token: 'operators', foreground: 'A6A3A1' },
-      { token: 'operators.yaml', foreground: 'A6A3A1' },
-      { token: 'delimiter', foreground: 'A6A3A1' },
-      { token: 'delimiter.bracket', foreground: 'A6A3A1' },
-      { token: 'delimiter.square', foreground: 'A6A3A1' },
-      { token: 'tag', foreground: 'A890D0' },
-      { token: 'namespace', foreground: 'A890D0' },
-      { token: 'attribute.name', foreground: '79A8D8' },
-    ],
-    colors: {
-      'editor.background': palette.dark.bg,
-      'editor.foreground': palette.dark.fg,
-      'editorLineNumber.foreground': palette.dark.meta,
-      'editorLineNumber.activeForeground': palette.dark.fg,
-      'editor.lineHighlightBackground': palette.dark.surface,
-      'editor.selectionBackground': withAlpha(palette.dark.border, '80'),
-      'editorCursor.foreground': palette.dark.fg,
-      'editorWhitespace.foreground': palette.dark.border,
-      'editorIndentGuide.background': palette.dark.borderSoft,
-      'editorIndentGuide.activeBackground': palette.dark.border,
-      'editorGutter.background': palette.dark.bg,
-      'editorWidget.background': palette.dark.surface,
-      'editorWidget.border': palette.dark.border,
-      'input.background': palette.dark.bg,
-      'input.border': palette.dark.border,
-      'input.foreground': palette.dark.fg,
-      'minimap.background': palette.dark.bg,
-      'minimapSlider.background': withAlpha(palette.dark.meta, '40'),
-      'minimapSlider.hoverBackground': withAlpha(palette.dark.muted, '60'),
-      'minimapSlider.activeBackground': withAlpha(palette.dark.fg2, '80'),
-      'scrollbarSlider.background': withAlpha(palette.dark.meta, '40'),
-      'scrollbarSlider.hoverBackground': withAlpha(palette.dark.muted, '60'),
-      'scrollbarSlider.activeBackground': withAlpha(palette.dark.fg2, '80'),
-      'editorOverviewRuler.border': '#00000000',
-    },
-  });
+/**
+ * Monaco's YAML token rules, one set per editor background.
+ *
+ * Independent of the console's palette on purpose: these are *syntax* colours - a key, a string, a
+ * number - and a syntax hue carries no verdict and no layer, so it is not a theme token, and deriving
+ * eighteen of them from nine palette tokens would be inventing a relationship that does not exist.
+ *
+ * They are selected by the **editor background's own lightness**, not by the console's mode. The two were
+ * the same thing while every palette was hand-tuned, and they stopped being the same thing the moment an
+ * operator could author one: a dark-mode palette with a light page is a legal palette, and choosing the
+ * pastel rules for it would draw pale text on a pale field. Keyed on the background, the rule set follows
+ * the surface it is read against.
+ */
+const MONACO_TOKEN_RULES: Record<ThemeMode, monaco.editor.ITokenThemeRule[]> = {
+  dark: [
+    { token: 'comment', foreground: '7F858A', fontStyle: 'italic' },
+    { token: 'comment.yaml', foreground: '7F858A', fontStyle: 'italic' },
+    { token: 'type', foreground: '79A8D8' }, // YAML keys (host:, port:, ...)
+    { token: 'type.yaml', foreground: '79A8D8' },
+    { token: 'string', foreground: 'B7A7D8' },
+    { token: 'string.yaml', foreground: 'B7A7D8' },
+    { token: 'number', foreground: '72A7A0' },
+    { token: 'number.yaml', foreground: '72A7A0' },
+    { token: 'keyword', foreground: 'C58FB0' }, // true, false, null
+    { token: 'keyword.yaml', foreground: 'C58FB0' },
+    { token: 'operators', foreground: 'A6A3A1' },
+    { token: 'operators.yaml', foreground: 'A6A3A1' },
+    { token: 'delimiter', foreground: 'A6A3A1' },
+    { token: 'delimiter.bracket', foreground: 'A6A3A1' },
+    { token: 'delimiter.square', foreground: 'A6A3A1' },
+    { token: 'tag', foreground: 'A890D0' },
+    { token: 'namespace', foreground: 'A890D0' },
+    { token: 'attribute.name', foreground: '79A8D8' },
+  ],
+  light: [
+    { token: 'comment', foreground: '6E7378', fontStyle: 'italic' },
+    { token: 'comment.yaml', foreground: '6E7378', fontStyle: 'italic' },
+    { token: 'type', foreground: '185FA5' },
+    { token: 'type.yaml', foreground: '185FA5' },
+    { token: 'string', foreground: '5D4B8B' },
+    { token: 'string.yaml', foreground: '5D4B8B' },
+    { token: 'number', foreground: '1B7F75' },
+    { token: 'number.yaml', foreground: '1B7F75' },
+    { token: 'keyword', foreground: '8E3E6F' },
+    { token: 'keyword.yaml', foreground: '8E3E6F' },
+    { token: 'operators', foreground: '4F4D4B' },
+    { token: 'operators.yaml', foreground: '4F4D4B' },
+    { token: 'delimiter', foreground: '4F4D4B' },
+    { token: 'delimiter.bracket', foreground: '4F4D4B' },
+    { token: 'delimiter.square', foreground: '4F4D4B' },
+    { token: 'tag', foreground: '6B4699' },
+    { token: 'namespace', foreground: '6B4699' },
+    { token: 'attribute.name', foreground: '185FA5' },
+  ],
+};
 
-  monaco.editor.defineTheme('omc-light', {
-    base: 'vs',
+/**
+ * defineMonacoTheme registers one resolved palette with Monaco under its own id.
+ *
+ * Called for the palette in force rather than for every palette at load: a palette's colours are
+ * derived at runtime, so an operator's own palette has no id to define ahead of time, and the six
+ * built-ins no longer need six definitions to exist before anyone asks for them.
+ */
+export function defineMonacoTheme(id: string, palette: ThemePalette, mode: ThemeMode): void {
+  const editorBackground = editorBackgroundFor(palette, mode);
+  // The nearer hand-picked step is the starting point; the fit below is the guarantee. `base` and the rest
+  // of the colours follow the mode, which is what decides the editor's own chrome and its inherited
+  // defaults.
+  const rulesFor = relativeLuminance(editorBackground) < DARK_BACKGROUND_LUMINANCE ? 'dark' : 'light';
+  monaco.editor.defineTheme(id, {
+    base: mode === 'dark' ? 'vs-dark' : 'vs',
     inherit: true,
-    rules: [
-      { token: 'comment', foreground: '6E7378', fontStyle: 'italic' },
-      { token: 'comment.yaml', foreground: '6E7378', fontStyle: 'italic' },
-      { token: 'type', foreground: '185FA5' }, // YAML Keys in light mode
-      { token: 'type.yaml', foreground: '185FA5' },
-      { token: 'string', foreground: '5D4B8B' }, // Strings in light mode
-      { token: 'string.yaml', foreground: '5D4B8B' },
-      { token: 'number', foreground: '1B7F75' }, // Numbers in light mode
-      { token: 'number.yaml', foreground: '1B7F75' },
-      { token: 'keyword', foreground: '8E3E6F' }, // true, false in light mode
-      { token: 'keyword.yaml', foreground: '8E3E6F' },
-      { token: 'operators', foreground: '4F4D4B' },
-      { token: 'operators.yaml', foreground: '4F4D4B' },
-      { token: 'delimiter', foreground: '4F4D4B' },
-      { token: 'delimiter.bracket', foreground: '4F4D4B' },
-      { token: 'delimiter.square', foreground: '4F4D4B' },
-      { token: 'tag', foreground: '6B4699' },
-      { token: 'namespace', foreground: '6B4699' },
-      { token: 'attribute.name', foreground: '185FA5' },
-    ],
-    colors: {
-      'editor.background': palette.light.surface,
-      'editor.foreground': palette.light.fg,
-      'editorLineNumber.foreground': palette.light.meta,
-      'editorLineNumber.activeForeground': palette.light.fg,
-      'editor.lineHighlightBackground': palette.light.bg,
-      'editor.selectionBackground': withAlpha(palette.light.border, '80'),
-      'editorCursor.foreground': palette.light.fg,
-      'editorWhitespace.foreground': palette.light.border,
-      'editorIndentGuide.background': palette.light.borderSoft,
-      'editorIndentGuide.activeBackground': palette.light.border,
-      'editorGutter.background': palette.light.surface,
-      'editorWidget.background': palette.light.surface,
-      'editorWidget.border': palette.light.border,
-      'input.background': palette.light.bg,
-      'input.border': palette.light.border,
-      'input.foreground': palette.light.fg,
-      'minimap.background': palette.light.surface,
-      'minimapSlider.background': withAlpha(palette.light.meta, '40'),
-      'minimapSlider.hoverBackground': withAlpha(palette.light.muted, '60'),
-      'minimapSlider.activeBackground': withAlpha(palette.light.fg2, '80'),
-      'scrollbarSlider.background': withAlpha(palette.light.meta, '40'),
-      'scrollbarSlider.hoverBackground': withAlpha(palette.light.muted, '60'),
-      'scrollbarSlider.activeBackground': withAlpha(palette.light.fg2, '80'),
-      'editorOverviewRuler.border': '#00000000',
-    },
+    rules: MONACO_TOKEN_RULES[rulesFor].map((rule) => ({
+      ...rule,
+      foreground: fitSyntaxColor(rule.foreground as string, editorBackground).replace('#', '').toUpperCase(),
+    })),
+    colors: monacoColors(palette, mode),
   });
+}
+
+/**
+ * The luminance below which an editor background counts as dark.
+ *
+ * 0.18 is the usual mid-point for this decision and it is deliberately not 0.5: a mid-grey field carries
+ * dark text comfortably, so treating it as dark would pick the pastel rules for a surface they are not
+ * legible on.
+ */
+const DARK_BACKGROUND_LUMINANCE = 0.18;
+
+/**
+ * The contrast every syntax colour must clear against the editor background.
+ *
+ * 4.5:1 - the console's floor for text, which syntax is - and the shipped palettes meet it as a rule
+ * rather than by luck: measured across the six, the tightest colour is OMC Light's comment at 4.44:1, so
+ * the fit moves that one step and leaves the other seventeen as they were designed.
+ */
+const SYNTAX_CONTRAST_FLOOR = 4.5;
+
+/**
+ * fitSyntaxColor moves a syntax hue along its own lightness until it is legible on the given field.
+ *
+ * The two hand-picked rule sets assume the field matches the mode, which was true while every palette
+ * was hand-tuned and stopped being true once palettes are authored: an operator can put a mid-grey page
+ * behind dark mode, and there the grey comment step reads 1.07:1 - invisible, not merely quiet. The
+ * *hues* are still not theme tokens (a key is blue, a string is lavender, and none of that is a
+ * relationship the palette knows about), but their lightness is a property of the field they are drawn
+ * on, so this adapts the step rather than inventing eighteen palette-derived colours.
+ *
+ * It moves toward whichever end of the scale the field leaves more room for, which is the direction that
+ * reaches the floor in the fewest steps and the one a colour picked for that field would have taken.
+ */
+function fitSyntaxColor(hue: string, background: string): string {
+  if (contrastRatio(hue, background) >= SYNTAX_CONTRAST_FLOOR) return hue;
+  const towardLight = contrastRatio('#ffffff', background) >= contrastRatio('#000000', background);
+  let lightness = oklchLightness(hue);
+  for (let step = 0; step < MAX_SYNTAX_FIT_STEPS; step += 1) {
+    lightness = Math.min(1, Math.max(0, lightness + (towardLight ? SYNTAX_FIT_STEP : -SYNTAX_FIT_STEP)));
+    const candidate = withLightness(hue, lightness);
+    if (contrastRatio(candidate, background) >= SYNTAX_CONTRAST_FLOOR) return candidate;
+    if (lightness === 0 || lightness === 1) return candidate;
+  }
+  return hue;
+}
+
+/** Below the threshold at which a syntax colour's step can be told from its neighbour. */
+const SYNTAX_FIT_STEP = 0.01;
+/** Reaches either end of the scale from any starting lightness. */
+const MAX_SYNTAX_FIT_STEPS = 120;
+
+/**
+ * The fill the editor itself paints.
+ *
+ * The editor sits inside a `var(--bg)` shell. The shipped dark theme used `bg` for the editor itself and
+ * `surface` for the active line; keep that relationship for every palette rather than swapping the two
+ * surfaces. Named once because two things read it: the colours below and the choice of token rules.
+ */
+function editorBackgroundFor(palette: ThemePalette, mode: 'dark' | 'light'): string {
+  return mode === 'dark' ? palette.bg : palette.surface;
+}
+
+function monacoColors(palette: ThemePalette, mode: 'dark' | 'light'): Record<string, string> {
+  const editorBackground = editorBackgroundFor(palette, mode);
+  const lineHighlight = mode === 'dark' ? palette.surface : palette.bg;
+  return {
+    'editor.background': editorBackground,
+    'editor.foreground': palette.fg,
+    'editorLineNumber.foreground': palette.meta,
+    'editorLineNumber.activeForeground': palette.fg,
+    'editor.lineHighlightBackground': lineHighlight,
+    'editor.selectionBackground': withAlpha(palette.border, '80'),
+    'editorCursor.foreground': palette.fg,
+    'editorWhitespace.foreground': palette.border,
+    'editorIndentGuide.background': palette.borderSoft,
+    'editorIndentGuide.activeBackground': palette.border,
+    'editorGutter.background': editorBackground,
+    'editorWidget.background': palette.elevated,
+    'editorWidget.border': palette.border,
+    'input.background': palette.bg,
+    'input.border': palette.border,
+    'input.foreground': palette.fg,
+    'minimap.background': editorBackground,
+    'minimapSlider.background': withAlpha(palette.meta, '40'),
+    'minimapSlider.hoverBackground': withAlpha(palette.muted, '60'),
+    'minimapSlider.activeBackground': withAlpha(palette.fg2, '80'),
+    'scrollbarSlider.background': withAlpha(palette.meta, '40'),
+    'scrollbarSlider.hoverBackground': withAlpha(palette.muted, '60'),
+    'scrollbarSlider.activeBackground': withAlpha(palette.fg2, '80'),
+    'editorOverviewRuler.border': '#00000000',
+  };
 }
 
 ensureMonacoConfigured();
@@ -179,7 +249,7 @@ export interface YamlSourceEditorProps {
   onChange: (value: string) => void;
   loadingText: string;
   onSave?: () => void;
-  themeMode?: 'dark' | 'light';
+  theme: Pick<ResolvedPalette, 'id' | 'mode' | 'palette'>;
   editorRef?: React.MutableRefObject<YamlSourceEditorRef | null>;
 }
 
@@ -188,14 +258,25 @@ export const YamlSourceEditor: React.FC<YamlSourceEditorProps> = ({
   onChange,
   loadingText,
   onSave,
-  themeMode = 'dark',
+  theme,
   editorRef,
 }) => {
   const innerEditorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const onSaveRef = useRef(onSave);
   onSaveRef.current = onSave;
+  // The hook is read here rather than the options below being styled by CSS, because these are the
+  // editor's own options: Monaco draws its content on a canvas-backed view, so a stylesheet cannot
+  // wrap it or turn off its minimap.
+  const isNarrowEditor = useIsPhoneViewport();
 
-  const activeTheme = themeMode === 'light' ? 'omc-light' : 'omc-dark';
+  // Registered in a layout effect rather than at module load: the palette in force is only known
+  // once a preference has been read, and an operator's own palette has no id to pre-define. Monaco
+  // creates the editor after its loader resolves, which is later than this runs, so the theme is
+  // always defined before the first paint of the editor.
+  React.useLayoutEffect(() => {
+    defineMonacoTheme(theme.id, theme.palette, theme.mode);
+    monaco.editor.setTheme(theme.id);
+  }, [theme]);
 
   const handleMount: OnMount = (editor) => {
     innerEditorRef.current = editor;
@@ -275,7 +356,7 @@ export const YamlSourceEditor: React.FC<YamlSourceEditorProps> = ({
         path="config.yaml"
         height="100%"
         language="yaml"
-        theme={activeTheme}
+        theme={theme.id}
         value={value}
         onChange={(val) => onChange(val ?? '')}
         onMount={handleMount}
@@ -287,16 +368,20 @@ export const YamlSourceEditor: React.FC<YamlSourceEditorProps> = ({
         options={{
           fontFamily:
             '"Sarasa Mono SC", "Sarasa UI SC", "Sarasa Term SC", "更纱黑体 SC", monospace',
-          fontSize: 13,
-          lineHeight: 21,
+          /* A phone is not a smaller desktop for a source editor. At 13px the code is below the
+             16px floor iOS zooms on, `wordWrap: 'off'` forces horizontal scrolling on a surface
+             with no keyboard to escape it, and the minimap is decoration standing in a column that
+             is already narrow. The measured budget is unchanged on a desktop pointer. */
+          fontSize: isNarrowEditor ? 16 : 13,
+          lineHeight: isNarrowEditor ? 24 : 21,
           tabSize: 2,
           insertSpaces: true,
           detectIndentation: false,
           automaticLayout: true,
           scrollBeyondLastLine: false,
-          wordWrap: 'off',
+          wordWrap: isNarrowEditor ? 'on' : 'off',
           minimap: {
-            enabled: true,
+            enabled: !isNarrowEditor,
             side: 'right',
             size: 'proportional',
             showSlider: 'always',

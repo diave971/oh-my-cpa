@@ -1,7 +1,7 @@
 /**
  * Runs the frontend logic suites from one process.
  *
- * `test:logic` used to be a `pnpm` chain, so ten suites meant ten package-manager
+ * `test:logic` used to be a `pnpm` chain, so every suite meant another package-manager startup
  * startups - each one re-resolving the workspace and spawning a shell before the
  * test itself began. That overhead was a fixed cost paid on every run, unrelated to
  * the work being verified.
@@ -35,14 +35,32 @@ const SUITES = [
   { name: 'provider console', script: 'scripts/test-provider-console.ts', flags: ['--experimental-strip-types', '--import', './scripts/ts-resolve.mjs'] },
   { name: 'provider toggle queue', script: 'scripts/test-provider-toggle-queue.ts', flags: ['--experimental-strip-types', '--import', './scripts/ts-resolve.mjs'] },
   { name: 'scroll intent', script: 'scripts/test-scroll-intent.ts', flags: ['--experimental-strip-types', '--import', './scripts/ts-resolve.mjs'] },
+  { name: 'overlay history', script: 'scripts/test-overlay-history.ts', flags: ['--experimental-strip-types', '--import', './scripts/ts-resolve.mjs'] },
+  { name: 'phone row fields', script: 'scripts/test-phone-rows.ts', flags: ['--experimental-strip-types', '--import', './scripts/ts-resolve.mjs'] },
+  { name: 'mask parity', script: 'scripts/test-mask-key.ts', flags: ['--experimental-strip-types'] },
+  { name: 'clipboard strategy', script: 'scripts/test-clipboard.ts', flags: ['--experimental-strip-types'] },
   { name: 'visible clock', script: 'scripts/test-visible-clock.ts', flags: ['--experimental-strip-types'] },
   { name: 'chart marks', script: 'scripts/test-chart-marks.ts', flags: ['--experimental-strip-types', '--import', './scripts/ts-resolve.mjs'] },
+  { name: 'dashboard cost note', script: 'scripts/test-dashboard-cost-note.ts', flags: ['--experimental-strip-types', '--import', './scripts/ts-resolve.mjs'] },
   { name: 'token heatmap', script: 'scripts/test-token-heatmap.ts', flags: ['--experimental-strip-types', '--import', './scripts/ts-resolve.mjs'] },
   { name: 'token display', script: 'scripts/test-token-display.ts', flags: ['--experimental-strip-types', '--import', './scripts/ts-resolve.mjs'] },
-];
+  { name: 'quota renewal display', script: 'scripts/test-quota-renewal.ts', flags: ['--experimental-strip-types', '--import', './scripts/ts-resolve.mjs'] },
+  { name: 'theme presets', script: 'scripts/test-theme-presets.ts', flags: ['--experimental-strip-types', '--import', './scripts/ts-resolve.mjs'] },
+  { name: 'plugin config', script: 'scripts/test-plugin-config.ts', flags: ['--experimental-strip-types', '--import', './scripts/ts-resolve.mjs'] },
+  { name: 'oauth model aliases', script: 'scripts/test-oauth-model-alias.ts', flags: ['--experimental-strip-types', '--import', './scripts/ts-resolve.mjs'] },
+  { name: 'oauth providers', script: 'scripts/test-oauth-providers.ts', flags: ['--experimental-strip-types', '--import', './scripts/ts-resolve.mjs'] },
+  { name: 'dashboard providers', script: 'scripts/test-dashboard-providers.ts', flags: ['--experimental-strip-types', '--import', './scripts/ts-resolve.mjs'] },
+  { name: 'provider icons', script: 'scripts/test-provider-icons.ts', flags: ['--experimental-strip-types', '--import', './scripts/ts-resolve.mjs'] },
+  { name: 'deploy base path', script: 'scripts/test-base-path.mjs', flags: [] },];
 
-/** Bounded so a small machine is not asked to schedule eleven parsers at once. */
-const concurrency = Math.max(1, Number(process.env.OMCPA_LOGIC_CONCURRENCY ?? 2));
+/** Bounded so a small machine is not asked to schedule every parser at once. */
+// Parsed with Number rather than parseInt so a malformed value falls back to the
+// default instead of being silently truncated: parseInt reads "1workers" and
+// "2.5" as 1 and 2, which would quietly run the suites with the wrong width.
+const requestedConcurrency = Number(process.env.OMCPA_LOGIC_CONCURRENCY ?? '2');
+const concurrency = Number.isSafeInteger(requestedConcurrency) && requestedConcurrency > 0
+  ? Math.min(requestedConcurrency, SUITES.length)
+  : 2;
 
 function runSuite(suite) {
   const startedAt = Date.now();

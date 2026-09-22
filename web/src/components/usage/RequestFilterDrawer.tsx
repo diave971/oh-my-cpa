@@ -1,9 +1,9 @@
 import React from 'react';
 import { Button, Drawer, Input, InputNumber, Segmented, Select, Tooltip } from 'antd';
 import type { UsageCostFilter, UsageFacetValue, UsageFacets, UsageResultFilter } from '../../types/usageEvents';
-import { providerFacetLabel, usageFacetLabel } from '../../types/usageEventView';
+import { providerFacetLabel, usageFacetLabel } from '../../types/usageEventLabels';
 import { ResultMarker } from './ResultMarker';
-import type { EventFilterKey } from '../../types/usageEventView';
+import type { EventFilterKey } from '../../types/usageEventQuery';
 import { parseUsageRangeBound } from '../../types/usageEvents';
 import type { RangeFieldKey, RangeBound } from '../../types/usageEventFilters';
 import type { UsageEventsFilterDraft, UsageEventsView } from '../../types/usageEventFilters';
@@ -15,6 +15,7 @@ import {
   validateFilterDraft,
 } from '../../types/usageEventFilters';
 import { useT } from '../../i18n';
+import { useOverlayHistory } from '../../hooks/useOverlayHistory';
 import './RequestFilterDrawer.css';
 
 /**
@@ -109,6 +110,11 @@ export const RequestFilterDrawer: React.FC<RequestFilterDrawerProps> = ({
   onApply,
 }) => {
   const t = useT();
+  // Apply navigates and *then* closes the drawer, and that order is what makes the close safe:
+  // the router has already replaced the entry this sentinel was opened over, so the module
+  // abandons the sentinel instead of traversing. Traversing would pop the entry the filters
+  // were just written to and visibly revert them. The browser suite pins this pair.
+  useOverlayHistory({ isOpen: open, onClose });
   const [draft, setDraft] = React.useState<UsageEventsFilterDraft>(EMPTY_FILTER_DRAFT);
 
   /**

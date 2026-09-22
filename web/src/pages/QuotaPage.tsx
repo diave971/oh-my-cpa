@@ -7,11 +7,10 @@ import { useT } from '../i18n';
 import type { QuotaItem } from '../types/quota';
 import { QuotaCard } from './quota/QuotaCard';
 import { ProviderFilterTabs } from '../components/common/ProviderFilterTabs';
+import { providerFilterTabs } from '../types/credentialProviders';
+import { usePluginOAuthLogos } from '../hooks/usePluginOAuthLogos';
+import { pluginOAuthLogoFor } from '../types/pluginOAuthProviders';
 import styles from './quota/QuotaPage.module.css';
-
-// Fixed provider tabs, shown even when their count is zero (CPAMC parity);
-// providers present in the data but not listed here are appended.
-const KNOWN_PROVIDERS = ['claude', 'antigravity', 'codex', 'xai', 'kimi'];
 
 export const QuotaPage: React.FC = () => {
   const t = useT();
@@ -38,12 +37,11 @@ export const QuotaPage: React.FC = () => {
 
   const quotas: QuotaItem[] = quotaData?.quotas ?? [];
 
-  const tabProviders = useMemo(() => {
-    const extras = quotas
-      .map((item) => item.provider)
-      .filter((p) => p && !KNOWN_PROVIDERS.includes(p));
-    return ['all', ...KNOWN_PROVIDERS, ...Array.from(new Set(extras)).sort()];
-  }, [quotas]);
+  const tabProviders = useMemo(() => providerFilterTabs(quotas.map((item) => item.provider)), [quotas]);
+
+  // A plugin-registered OAuth provider publishes its own logo, which wins over the
+  // console's catalog mark for that provider key.
+  const pluginLogos = usePluginOAuthLogos();
 
   const tabCounts = useMemo(() => {
     const counts: Record<string, number> = { all: quotas.length };
@@ -230,6 +228,7 @@ export const QuotaPage: React.FC = () => {
             counts={tabCounts}
             active={providerTab}
             onChange={setProviderTab}
+            pluginLogos={pluginLogos}
           />
           {filteredQuotas.length === 0 ? (
             <Empty
@@ -243,6 +242,7 @@ export const QuotaPage: React.FC = () => {
                 <QuotaCard
                   key={item.auth_index}
                   item={item}
+                  pluginLogo={pluginOAuthLogoFor(pluginLogos, item.provider)}
                   isRefreshing={refreshingIndexes.has(item.auth_index)}
                   onRefresh={(idx) => refreshMutation.mutate(idx)}
                   onClearCooldown={(idx) => clearCooldownMutation.mutate(idx)}

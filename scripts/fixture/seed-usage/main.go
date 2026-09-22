@@ -7,15 +7,9 @@
 // real insert path owns the request-time price lock, the display-mask rules and
 // the schema, so this fixture cannot drift away from them.
 //
-// Usage (paths are the app's own database file):
+// Usage (the argument is the app's own database file):
 //
-//	seed-usage -db <path> -scenario list     # a deterministic window for the list
-//	seed-usage -db <path> -scenario append   # one more record, later than the rest
-//
-// The scenario names describe what the browser checks need, not what the data
-// "is": `list` seeds a window whose failure share must read as routine noise,
-// and `append` seeds a record that finished after the ones already on screen, so
-// a live poll has something new to report.
+//	seed-usage -db <path>
 package main
 
 import (
@@ -55,6 +49,25 @@ const (
 	slowRequestStartedMinutesAgo = 58
 	fastRequestNewestMinutesAgo  = 3
 	fastRequestOldestMinutesAgo  = 51
+	// The window slot whose record is answered through a plugin-registered OAuth
+	// provider. It is the second newest, so the plugin's own logo is inside the
+	// list's first virtual window, while slot 0 keeps carrying the failure share.
+	pluginProviderRecord = 1
+	// The window slot answered by an API-key provider, bound to one of the two
+	// credentials the fake CPA configures for `codex-api-key`. The record stores the
+	// credential's runtime auth index and the provider label CPA writes, which is
+	// what lets the console resolve which key answered; a second record below points
+	// at an index no credential claims, so the acceptance run can require the row to
+	// print nothing rather than a guess.
+	providerKeyRecord = 2
+)
+
+// The credential auth indexes the fake CPA publishes for its codex list, and the
+// provider label CPA puts on a request such a credential served.
+const (
+	fixtureProviderIndex  = "codex-e2e"
+	fixtureUnclaimedIndex = "codex-e2e-absent"
+	fixtureProviderLabel  = "codex"
 )
 
 // fixtureClientKey is the gateway client key the acceptance run also configures in
@@ -64,7 +77,6 @@ const fixtureClientKey = "omc-e2e-client-secret"
 
 func main() {
 	databasePath := flag.String("db", "", "path to the Oh My CPA SQLite database")
-	scenario := flag.String("scenario", "list", "list | append")
 	// The cipher has to match the one the app runs with, because a caller-key
 	// identity is a keyed fingerprint: seeding under a different key would store an
 	// identity the running application can never produce.
@@ -99,17 +111,8 @@ func main() {
 		fail(err)
 	}
 
-	switch *scenario {
-	case "list":
-		if err := seedList(ctx, repo); err != nil {
-			fail(err)
-		}
-	case "append":
-		if err := seedAppend(ctx, repo); err != nil {
-			fail(err)
-		}
-	default:
-		fail(fmt.Errorf("unknown scenario %q", *scenario))
+	if err := seedList(ctx, repo); err != nil {
+		fail(err)
 	}
 	fmt.Println("SEED_USAGE_OK")
 }
@@ -154,12 +157,49 @@ func seedList(ctx context.Context, repo *repository.Repository) error {
 		if fastRecords > 1 {
 			minutesAgo += (index * span) / (fastRecords - 1)
 		}
-		events = append(events, fixtureEvent(
-			fmt.Sprintf("fixture-list-%02d", index),
+		// One record in the window is an answer from a plugin-registered OAuth
+		// provider: the acceptance run's `iflow` fixture plugin and its
+		// `iflow-fixture.json` credential. It is what makes the plugin's own logo -
+		// rather than a mark guessed from the provider key - observable in the
+		// request list. It takes a slot inside the window rather than extending it,
+		// because the window's size and its 1-in-50 failure share are what the
+		// list, the success-rate bands and the audit are calibrated against.
+		isPluginProvider := index == pluginProviderRecord
+		eventKey := fmt.Sprintf("fixture-list-%02d", index)
+		if isPluginProvider {
+			eventKey = "fixture-plugin-provider"
+		}
+		// A record answered by an API-key credential, and one whose auth index nothing
+		// claims. The record carries what CPA stores - the provider label and the
+		// credential's runtime auth index - and nothing else, so the acceptance run can
+		// require a resolved mask on one row and no line at all on the other.
+		isProviderKey := index == providerKeyRecord
+		isUnclaimedKey := index == providerKeyRecord+1
+		if isProviderKey {
+			eventKey = "fixture-provider-key"
+		}
+		if isUnclaimedKey {
+			eventKey = "fixture-provider-key-absent"
+		}
+		event := fixtureEvent(
+			eventKey,
 			now.Add(-time.Duration(minutesAgo)*time.Minute),
 			int64(shortLatencyMS+index*7),
 			index < failingRecords,
-		))
+		)
+		if isPluginProvider {
+			event.Provider = "iflow"
+			event.AuthIndex = "auth-index-e2e-7"
+		}
+		if isProviderKey || isUnclaimedKey {
+			event.Provider = fixtureProviderLabel
+			event.AuthType = "apikey"
+			event.AuthIndex = fixtureProviderIndex
+			if isUnclaimedKey {
+				event.AuthIndex = fixtureUnclaimedIndex
+			}
+		}
+		events = append(events, event)
 	}
 	events = append(events, fixtureEvent(
 		"fixture-agent-slow",
@@ -183,19 +223,20 @@ func seedList(ctx context.Context, repo *repository.Repository) error {
 	callerKey.APIKeyMask = security.MaskSecret(fixtureClientKey)
 	callerKey.Source = "fixture-caller"
 	events = append(events, callerKey)
+	// A fixture-only late arrival: the row is committed before the app starts but
+	// its request time is outside the initial window for a short interval. The
+	// sliding window admits it on a later poll, which exercises the live-tail
+	// path without writing to SQLite from a second process while the app holds a
+	// read snapshot.
+	events = append(events, fixtureEvent(
+		"fixture-future-arrival",
+		now.Add(20*time.Second),
+		shortLatencyMS+50,
+		false,
+	))
 
 	if _, err := repo.InsertUsageEvents(ctx, events); err != nil {
 		return fmt.Errorf("seed list scenario: %w", err)
-	}
-	return nil
-}
-
-// seedAppend writes one more record than the list scenario, with the newest
-// timestamp, so a poll after this point has exactly one new row to report.
-func seedAppend(ctx context.Context, repo *repository.Repository) error {
-	event := fixtureEvent("fixture-append-00", time.Now().UTC(), shortLatencyMS, false)
-	if _, err := repo.InsertUsageEvents(ctx, []usage.Event{event}); err != nil {
-		return fmt.Errorf("seed append scenario: %w", err)
 	}
 	return nil
 }
